@@ -33,6 +33,7 @@ from .render import format_fact, world
 from .scope import CheckedTarget, OutOfScope, Scope
 from .technique import Host, Technique, TechniqueResult, Url, _strip, collect, target_type
 
+_VULN_CLASS = re.compile(r"[a-z0-9_.-]{1,64}")
 _SECRET_REF = re.compile(r"\{\{cred:(\d+)\}\}")
 _MAX_LOGGED_OBSERVATION = 50_000
 
@@ -141,6 +142,7 @@ class Engagement:
         self._lock = threading.Lock()
         self._workdir_lock = threading.Lock()
         self._workdir: str | None = None
+        self._closed = False
         self.started = time.time()
         self.facts.subscribe(self._log_fact)
         self.ledger.record("start", name=name, scope=scope.to_dict())
@@ -175,6 +177,8 @@ class Engagement:
             return CallResult(name, call_id, ok=False, text=message)
 
     def _call(self, name: str, args: dict[str, Any], call_id: str) -> CallResult:
+        if self._closed:
+            return self._blocked(name, call_id, args, "engagement is closed")
         t = self.techniques.get(name)
         if t is None:
             return self._blocked(name, call_id, args, f"unknown technique; known: {sorted(self.techniques)}")
@@ -220,6 +224,8 @@ class Engagement:
             return CallResult(name, call_id, ok=False, text=self._redact(message))
 
         new = self._ingest(t, call_id, result)
+        if self._closed:  # closed while this call ran: clean up whatever it just created
+            self.effects.dispose()
         observation = self._redact(sanitize(result.observation))
         self.ledger.record(
             "result",
@@ -300,8 +306,18 @@ class Engagement:
         return world(self.facts, self.techniques.values(), budget_tokens)
 
     def propose_finding(self, vuln_class: str, target: str, rationale: str = "") -> Fact:
-        """Record a claimed weakness. It stays `proposed` until `verify` finds evidence."""
-        fact = replace(finding(vuln_class, target, rationale=rationale), source="agent", target_derived=False)
+        """Record a claimed weakness. It stays `proposed` until `verify` finds evidence.
+
+        Proposing an existing finding again returns it unchanged, so a model cannot undo a
+        verification or revive a rejected finding by repeating itself.
+        """
+        if not _VULN_CLASS.fullmatch(vuln_class):
+            raise ValueError("vuln_class must be 1-64 chars of a-z, 0-9, '_', '-', '.'")
+        # Model-written text may echo target content, so it is treated as untrusted when rendered.
+        fact = replace(finding(vuln_class, target, rationale=rationale), source="agent")
+        existing = self.facts.get(fact.id)
+        if existing is not None:
+            return existing
         self.facts.add([fact])
         self.ledger.record("finding", id=fact.id, status="proposed", rationale=rationale)
         return self.facts.get(fact.id) or fact
@@ -354,6 +370,8 @@ class Engagement:
         """A private temp directory on the executor, created on first use and removed by dispose().
         It lives for the whole engagement (phases do not remove it)."""
         with self._workdir_lock:
+            if self._closed:
+                raise RuntimeError("engagement is closed")
             if self._workdir is None:
                 result = self.executor.run(["mktemp", "-d", "-t", "opgraph.XXXXXXXX"], 30)
                 path = result.stdout.strip()
@@ -385,6 +403,11 @@ class Engagement:
         return lines
 
     def close(self) -> list[str]:
+        """End the engagement: refuse new calls, stop running commands, clean up, close the log."""
+        self._closed = True
+        kill_running = getattr(self.executor, "kill_running", None)
+        if kill_running:
+            kill_running()
         lines = self.dispose()
         self.ledger.close()
         return lines

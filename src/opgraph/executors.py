@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -47,6 +48,10 @@ class Executor(Protocol):
 class LocalExecutor:
     """Runs commands on this machine. The whole process group is killed on timeout."""
 
+    def __init__(self) -> None:
+        self._running: set[subprocess.Popen[bytes]] = set()
+        self._lock = threading.Lock()
+
     def run(self, argv: list[str], timeout: int = 120, stdin: str | None = None) -> ExecResult:
         _check_argv(argv)
         start = time.monotonic()
@@ -60,6 +65,8 @@ class LocalExecutor:
             )
         except OSError as exc:
             return ExecResult(argv, 127, "", f"{type(exc).__name__}: {exc}", 0.0)
+        with self._lock:
+            self._running.add(proc)
         try:
             out, err = proc.communicate(stdin.encode() if stdin is not None else None, timeout)
             timed_out = False
@@ -67,6 +74,9 @@ class LocalExecutor:
             _kill_group(proc)
             out, err = _drain(proc)
             timed_out = True
+        finally:
+            with self._lock:
+                self._running.discard(proc)
         return ExecResult(
             argv,
             proc.returncode if not timed_out else 124,
@@ -78,6 +88,13 @@ class LocalExecutor:
 
     def resolve(self, host: str) -> str:
         return system_resolve(host)
+
+    def kill_running(self) -> None:
+        """Kill every command still running (used when an engagement is closed mid-call)."""
+        with self._lock:
+            running = list(self._running)
+        for proc in running:
+            _kill_group(proc)
 
 
 def _check_argv(argv: list[str]) -> None:
@@ -131,6 +148,7 @@ class SSHExecutor:
         self.destination = destination
         self.connect_timeout = connect_timeout
         self.options = list(options)
+        self._local = LocalExecutor()
         self._control_dir: str | None = None
         if reuse_connection and os.name == "posix":
             # Unix socket paths are limited to ~104 bytes; macOS $TMPDIR is too long, so use /tmp.
@@ -150,7 +168,7 @@ class SSHExecutor:
     def run(self, argv: list[str], timeout: int = 120, stdin: str | None = None) -> ExecResult:
         command = remote_command(argv, timeout)
         # Local safety net: the remote `timeout` should fire first.
-        result = _LOCAL.run([*self._ssh_argv(), command], timeout + 15, stdin)
+        result = self._local.run([*self._ssh_argv(), command], timeout + 15, stdin)
         result.argv = argv
         if result.rc == 124:
             result.timed_out = True
@@ -164,6 +182,10 @@ class SSHExecutor:
                 return result.stdout.split()[0]
         raise OSError(f"cannot resolve {host!r} on {self.destination}")
 
+    def kill_running(self) -> None:
+        """Kill local ssh clients still running; the remote `timeout` ends the remote side."""
+        self._local.kill_running()
+
     def close(self) -> None:
         """Stop the shared connection and remove the local control socket directory."""
         if not self._control_dir:
@@ -176,6 +198,3 @@ class SSHExecutor:
             check=False,
         )
         shutil.rmtree(control_dir, ignore_errors=True)
-
-
-_LOCAL = LocalExecutor()
