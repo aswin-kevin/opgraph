@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,19 +7,26 @@ name = "opgraph"
 version = "0.1.0"
 description = "Typed actions, shared memory, enforced scope and owned cleanup for agentic pentest systems."
 requires-python = ">=3.11"
-license = "Apache-2.0"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Aswin" }]
 keywords = ["security", "pentest", "agents", "llm", "mcp", "offensive-security"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
-  "License :: OSI Approved :: Apache Software License",
   "Topic :: Security",
   "Intended Audience :: Developers",
   "Typing :: Typed",
 ]
 dependencies = []  # the core is stdlib-only; keep it that way
+
+[project.urls]
+Homepage = "https://github.com/aswin-kevin/opgraph"
+Repository = "https://github.com/aswin-kevin/opgraph"
+Issues = "https://github.com/aswin-kevin/opgraph/issues"
 
 [project.optional-dependencies]
 # Only official packages from the framework vendors.
@@ -34,6 +41,10 @@ dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380", "mcp>=2.3", "openai-agents>
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opgraph"]
+
+[tool.hatch.build.targets.sdist]
+# Explicit allowlist: only these ever ship, whatever else sits in the working tree.
+only-include = ["src/opgraph", "tests", "examples", "LICENSE", "README.md", "pyproject.toml", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
