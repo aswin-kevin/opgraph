@@ -1,0 +1,37 @@
+===============================================================
+Gobuster v3.6
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
+===============================================================
+[+] Url:                     http://127.0.0.1:8080/
+[+] Method:                  GET
+[+] Threads:                 30
+[+] Wordlist:                /usr/share/dirb/wordlists/big.txt
+[+] Negative Status codes:   404
+[+] User Agent:              gobuster/3.6
+[+] Timeout:                 10s
+===============================================================
+Starting gobuster in directory enumeration mode
+===============================================================
+[2KProgress: 912 / 20470 (4.46%)[2K/admin                (Status: 301) [Size: 0] [--> /admin/]
+[2KProgress: 1836 / 20470 (8.97%)[2K/api                  (Status: 301) [Size: 0] [--> /api/]
+[2KProgress: 2769 / 20470 (13.53%)[2K/backup               (Status: 301) [Size: 0] [--> /backup/]
+[2KProgress: 3717 / 20470 (18.16%)[2KProgress: 4652 / 20470 (22.73%)[2K/css                  (Status: 301) [Size: 0] [--> /css/]
+[2KProgress: 5620 / 20470 (27.45%)[2K/debug                (Status: 301) [Size: 0] [--> /debug/]
+[2K/docs                 (Status: 301) [Size: 0] [--> /docs/]
+[2KProgress: 6591 / 20470 (32.20%)[2KProgress: 7537 / 20470 (36.82%)[2KProgress: 8434 / 20470 (41.20%)[2K/health               (Status: 301) [Size: 0] [--> /health/]
+[2K/images               (Status: 301) [Size: 0] [--> /images/]
+[2KProgress: 9394 / 20470 (45.89%)[2K/internal             (Status: 301) [Size: 0] [--> /internal/]
+[2K/js                   (Status: 301) [Size: 0] [--> /js/]
+[2KProgress: 10323 / 20470 (50.43%)[2K/login                (Status: 301) [Size: 0] [--> /login/]
+[2KProgress: 11255 / 20470 (54.98%)[2K/metrics              (Status: 301) [Size: 0] [--> /metrics/]
+[2KProgress: 12101 / 20470 (59.12%)[2KProgress: 13015 / 20470 (63.58%)[2KProgress: 13937 / 20470 (68.08%)[2KProgress: 14757 / 20470 (72.09%)[2KProgress: 15562 / 20470 (76.02%)[2KProgress: 16465 / 20470 (80.43%)[2K/static               (Status: 301) [Size: 0] [--> /static/]
+[2K/status               (Status: 301) [Size: 0] [--> /status/]
+[2KProgress: 17387 / 20470 (84.94%)[2KProgress: 18337 / 20470 (89.58%)[ERROR] Get "http://127.0.0.1:8080/.passwd": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+[ERROR] Get "http://127.0.0.1:8080/.htaccess": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+[ERROR] Get "http://127.0.0.1:8080/.htpasswd": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+[ERROR] Get "http://127.0.0.1:8080/.listing": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+[2K/uploads              (Status: 301) [Size: 0] [--> /uploads/]
+[2KProgress: 19264 / 20470 (94.11%)[2KProgress: 20231 / 20470 (98.83%)[2KProgress: 20469 / 20470 (100.00%)[2KProgress: 20469 / 20470 (100.00%)[2KProgress: 20469 / 20470 (100.00%)
+===============================================================
+Finished
+===============================================================

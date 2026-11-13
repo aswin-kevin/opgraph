@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.94SVN scan initiated Fri Nov 13 08:20:16 2026 as: nmap -A -v -p 1-10000 -oN nmapA.txt -oX nmapA.xml 127.0.0.1 -->
+<nmaprun scanner="nmap" args="nmap -A -v -p 1-10000 -oN nmapA.txt -oX nmapA.xml 127.0.0.1" start="1794558016" startstr="Fri Nov 13 08:20:16 2026" version="7.94SVN" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="10000" services="1-10000"/>
+<verbose level="1"/>
+<debugging level="0"/>
+<taskbegin task="NSE" time="1794558016"/>
+<taskend task="NSE" time="1794558016"/>
+<taskbegin task="NSE" time="1794558016"/>
+<taskend task="NSE" time="1794558016"/>
+<taskbegin task="NSE" time="1794558016"/>
+<taskend task="NSE" time="1794558016"/>
+<taskbegin task="SYN Stealth Scan" time="1794558017"/>
+<taskend task="SYN Stealth Scan" time="1794558017" extrainfo="10000 total ports"/>
+<taskbegin task="Service scan" time="1794558017"/>
+<taskend task="Service scan" time="1794558023" extrainfo="5 services on 1 host"/>
+<taskbegin task="NSE" time="1794558034"/>
+<taskend task="NSE" time="1794558039"/>
+<taskbegin task="NSE" time="1794558039"/>
+<taskend task="NSE" time="1794558039"/>
+<taskbegin task="NSE" time="1794558039"/>
+<taskend task="NSE" time="1794558039"/>
+<host starttime="1794558017" endtime="1794558039"><status state="up" reason="localhost-response" reason_ttl="0"/>
+<address addr="127.0.0.1" addrtype="ipv4"/>
+<hostnames>
+<hostname name="localhost" type="PTR"/>
+</hostnames>
+<ports><extraports state="closed" count="9995">
+<extrareasons reason="reset" count="9995" proto="tcp" ports="1-2023,2025-2120,2122-8079,8081-8442,8444-8999,9001-10000"/>
+</extraports>
+<port protocol="tcp" portid="2024"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="tcpwrapped" method="probed" conf="8"/></port>
+<port protocol="tcp" portid="2121"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ftp" product="pyftpdlib" version="2.2.0" method="probed" conf="10"><cpe>cpe:/a:giampaolo_rodola:pyftpdlib</cpe></service><script id="ftp-syst" output="&#xa;  STAT: &#xa;FTP server status:&#xa; Connected to: 127.0.0.1:2121&#xa; Waiting for username.&#xa; TYPE: ASCII; STRUcture: File; MODE: Stream&#xa; Data connection closed.&#xa;End of status."><elem key="STAT">&#xa;FTP server status:&#xa; Connected to: 127.0.0.1:2121&#xa; Waiting for username.&#xa; TYPE: ASCII; STRUcture: File; MODE: Stream&#xa; Data connection closed.&#xa;End of status.</elem>
+</script><script id="ftp-anon" output="Anonymous FTP login allowed (FTP code 230)&#xa;-rw-r-&#45;r-&#45;   1 root     root         1640 Nov 13 08:20 dirb.txt&#xa;-rw-r-&#45;r-&#45;   1 root     root          904 Nov 13 08:20 gobuster.txt&#xa;-rw-r-&#45;r-&#45;   1 root     root          119 Nov 13 08:20 nmapA.txt&#xa;-rw-r-&#45;r-&#45;   1 root     root         1134 Nov 13 08:20 nmapA.xml&#xa;-rw-r-&#45;r-&#45;   1 root     root         1514 Nov 13 08:19 scan.txt&#xa;-rw-r-&#45;r-&#45;   1 root     root         4529 Nov 13 08:19 scan.xml&#xa;drwxr-xr-x  19 root     root         4096 Nov 13 08:19 www"/></port>
+<port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="SimpleHTTPServer" version="0.6" extrainfo="Python 3.12.3" method="probed" conf="10"><cpe>cpe:/a:python:simplehttpserver:0.6</cpe></service><script id="http-git" output="&#xa;  127.0.0.1:8080/.git/&#xa;    Potential Git repository found (found 1/6 expected files)&#xa;"><table key="127.0.0.1:8080/.git/">
+<table key="files-found">
+<elem key=".git/config">false</elem>
+<elem key=".git/COMMIT_EDITMSG">false</elem>
+<elem key=".git/description">false</elem>
+<elem key=".git/info/exclude">false</elem>
+<elem key=".gitignore">false</elem>
+</table>
+</table>
+</script><script id="http-server-header" output="SimpleHTTP/0.6 Python/3.12.3"><elem>SimpleHTTP/0.6 Python/3.12.3</elem>
+</script><script id="http-title" output="Acme Admin Portal"><elem key="title">Acme Admin Portal</elem>
+</script><script id="http-methods" output="&#xa;  Supported Methods: GET HEAD"><table key="Supported Methods">
+<elem>GET</elem>
+<elem>HEAD</elem>
+</table>
+</script></port>
+<port protocol="tcp" portid="8443"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="SimpleHTTPServer" version="0.6" extrainfo="Python 3.12.3" method="probed" conf="10"><cpe>cpe:/a:python:simplehttpserver:0.6</cpe></service><script id="http-title" output="Acme Admin Portal"><elem key="title">Acme Admin Portal</elem>
+</script><script id="http-methods" output="&#xa;  Supported Methods: GET HEAD"><table key="Supported Methods">
+<elem>GET</elem>
+<elem>HEAD</elem>
+</table>
+</script><script id="http-git" output="&#xa;  127.0.0.1:8443/.git/&#xa;    Potential Git repository found (found 1/6 expected files)&#xa;"><table key="127.0.0.1:8443/.git/">
+<table key="files-found">
+<elem key=".git/config">false</elem>
+<elem key=".git/COMMIT_EDITMSG">false</elem>
+<elem key=".git/description">false</elem>
+<elem key=".git/info/exclude">false</elem>
+<elem key=".gitignore">false</elem>
+</table>
+</table>
+</script><script id="http-server-header" output="SimpleHTTP/0.6 Python/3.12.3"><elem>SimpleHTTP/0.6 Python/3.12.3</elem>
+</script></port>
+<port protocol="tcp" portid="9000"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="SimpleHTTPServer" version="0.6" extrainfo="Python 3.12.3" method="probed" conf="10"><cpe>cpe:/a:python:simplehttpserver:0.6</cpe></service><script id="http-git" output="&#xa;  127.0.0.1:9000/.git/&#xa;    Potential Git repository found (found 1/6 expected files)&#xa;"><table key="127.0.0.1:9000/.git/">
+<table key="files-found">
+<elem key=".git/config">false</elem>
+<elem key=".git/COMMIT_EDITMSG">false</elem>
+<elem key=".git/description">false</elem>
+<elem key=".git/info/exclude">false</elem>
+<elem key=".gitignore">false</elem>
+</table>
+</table>
+</script><script id="http-server-header" output="SimpleHTTP/0.6 Python/3.12.3"><elem>SimpleHTTP/0.6 Python/3.12.3</elem>
+</script><script id="http-methods" output="&#xa;  Supported Methods: GET HEAD"><table key="Supported Methods">
+<elem>GET</elem>
+<elem>HEAD</elem>
+</table>
+</script><script id="http-title" output="Acme Admin Portal"><elem key="title">Acme Admin Portal</elem>
+</script></port>
+</ports>
+<os><portused state="open" proto="tcp" portid="2121"/>
+<portused state="closed" proto="tcp" portid="1"/>
+<portused state="closed" proto="udp" portid="31868"/>
+<osmatch name="Linux 2.6.32" accuracy="97" line="55742">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="2.6.X" accuracy="97"><cpe>cpe:/o:linux:linux_kernel:2.6.32</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.1" accuracy="95" line="62926">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="95"><cpe>cpe:/o:linux:linux_kernel:3.1</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.2" accuracy="95" line="64673">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="95"><cpe>cpe:/o:linux:linux_kernel:3.2</cpe></osclass>
+</osmatch>
+<osmatch name="AXIS 210A or 211 Network Camera (Linux 2.6.17)" accuracy="95" line="61824">
+<osclass type="webcam" vendor="Linux" osfamily="Linux" osgen="2.6.X" accuracy="95"><cpe>cpe:/o:linux:linux_kernel:2.6.17</cpe></osclass>
+<osclass type="webcam" vendor="AXIS" osfamily="embedded" accuracy="95"><cpe>cpe:/h:axis:210a_network_camera</cpe><cpe>cpe:/h:axis:211_network_camera</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.7 - 3.11" accuracy="94" line="65984">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="94"><cpe>cpe:/o:linux:linux_kernel:3</cpe></osclass>
+</osmatch>
+<osmatch name="ASUS RT-N56U WAP (Linux 3.4)" accuracy="93" line="8405">
+<osclass type="WAP" vendor="Asus" osfamily="embedded" accuracy="93"><cpe>cpe:/h:asus:rt-n56u</cpe></osclass>
+<osclass type="WAP" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="93"><cpe>cpe:/o:linux:linux_kernel:3.4</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.16" accuracy="93" line="64180">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="93"><cpe>cpe:/o:linux:linux_kernel:3.16</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.8 - 3.9" accuracy="93" line="66337">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="93"><cpe>cpe:/o:linux:linux_kernel:3</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 5.0 - 5.7" accuracy="93" line="68076">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="93"><cpe>cpe:/o:linux:linux_kernel:5</cpe></osclass>
+</osmatch>
+<osmatch name="Linux 3.8 - 4.14" accuracy="92" line="66381">
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="3.X" accuracy="92"><cpe>cpe:/o:linux:linux_kernel:3</cpe></osclass>
+<osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="4.X" accuracy="92"><cpe>cpe:/o:linux:linux_kernel:4</cpe></osclass>
+</osmatch>
+<osfingerprint fingerprint="OS:SCAN(V=7.94SVN%E=4%D=11/13%OT=2121%CT=1%CU=31868%PV=N%DS=0%DC=L%G=Y%TM=6&#xa;OS:AF6C857%P=x86_64-pc-linux-gnu)SEQ(SP=101%GCD=1%ISR=102%TI=Z%CI=Z%II=I%TS&#xa;OS:=21)OPS(O1=MFFD7ST11NW9%O2=MFFD7ST11NW9%O3=MFFD7NNT11NW9%O4=MFFD7ST11NW9&#xa;OS:%O5=MFFD7ST11NW9%O6=MFFD7ST11)WIN(W1=FFCB%W2=FFCB%W3=FFCB%W4=FFCB%W5=FFC&#xa;OS:B%W6=FFCB)ECN(R=Y%DF=Y%T=40%W=FFD7%O=MFFD7NNSNW9%CC=Y%Q=)T1(R=Y%DF=Y%T=4&#xa;OS:0%S=O%A=S+%F=AS%RD=0%Q=)T2(R=N)T3(R=N)T4(R=Y%DF=Y%T=40%W=0%S=A%A=Z%F=R%O&#xa;OS:=%RD=0%Q=)T5(R=Y%DF=Y%T=40%W=0%S=Z%A=S+%F=AR%O=%RD=0%Q=)T6(R=Y%DF=Y%T=40&#xa;OS:%W=0%S=A%A=Z%F=R%O=%RD=0%Q=)T7(R=Y%DF=Y%T=40%W=0%S=Z%A=S+%F=AR%O=%RD=0%Q&#xa;OS:=)U1(R=Y%DF=N%T=40%IPL=164%UN=0%RIPL=G%RID=G%RIPCK=G%RUCK=G%RUD=G)IE(R=Y&#xa;OS:%DFI=N%T=40%CD=S)&#xa;"/>
+</os>
+<uptime seconds="7" lastboot="Fri Nov 13 08:20:32 2026"/>
+<distance value="0"/>
+<tcpsequence index="257" difficulty="Good luck!" values="89A7AB76,94231059,BC56BEBF,B712502A,9A513661,E433F397"/>
+<ipidsequence class="All zeros" values="0,0,0,0,0,0"/>
+<tcptssequence class="other" values="D973825A,2814F50,BAFE935D,D1012B11,3E6B529D,859D903E"/>
+<times srtt="78" rttvar="17" to="100000"/>
+</host>
+<taskbegin task="NSE" time="1794558039"/>
+<taskend task="NSE" time="1794558039"/>
+<taskbegin task="NSE" time="1794558039"/>
+<taskend task="NSE" time="1794558039"/>
+<taskbegin task="NSE" time="1794558039"/>
+<taskend task="NSE" time="1794558039"/>
+<runstats><finished time="1794558039" timestr="Fri Nov 13 08:20:39 2026" summary="Nmap done at Fri Nov 13 08:20:39 2026; 1 IP address (1 host up) scanned in 23.13 seconds" elapsed="23.13" exit="success"/><hosts up="1" down="0" total="1"/>
+</runstats>
+</nmaprun>
