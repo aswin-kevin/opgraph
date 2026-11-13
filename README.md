@@ -1,4 +1,6 @@
-<h1 align="center">opgraph</h1>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/aswin-kevin/opgraph/main/docs/assets/architecture.jpg" alt="opgraph: an AI agent's tool calls pass through Scope, Policy, Budget and typed-argument checks inside an Engagement, run on a local or SSH executor, and come back as sanitised, untrusted output into a fact graph of hosts, services, endpoints and evidence-backed findings, with cleanup on exit and an audit log" width="760">
+</p>
 
 <p align="center">
   <b>The safety and memory layer for AI pentest agents.</b><br>
