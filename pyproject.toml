@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opgraph"
+version = "0.1.0"
+description = "Typed actions, shared memory, enforced scope and owned cleanup for agentic pentest systems."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+keywords = ["security", "pentest", "agents", "llm", "mcp", "offensive-security"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Security",
+  "Intended Audience :: Developers",
+  "Typing :: Typed",
+]
+dependencies = []  # the core is stdlib-only; keep it that way
+
+[project.optional-dependencies]
+# Added in the adapters phase. Only official, well-known packages.
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opgraph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -m 'not kali and not live'"
+markers = [
+  "kali: needs ssh access to the Kali lab box",
+  "live: calls a real LLM (needs OLLAMA_API_KEY)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+include = ["src"]
+pythonVersion = "3.11"
