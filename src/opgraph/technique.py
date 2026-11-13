@@ -11,6 +11,7 @@ scope-checked (those typed Target/Url/Host), and the risk the policy decides on.
 from __future__ import annotations
 
 import inspect
+import re
 import types
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -51,6 +52,12 @@ class Host(Target):
     kind = "hostname or IP"
 
 
+class Network(Target):
+    """A hostname, IP address or CIDR range (10.0.0.0/24). Ranges must lie entirely in scope."""
+
+    kind = "hostname, IP or CIDR range"
+
+
 class Secret:
     """Marks a parameter that may carry credential handles: ``body: Annotated[str, Secret] = ""``.
 
@@ -83,6 +90,7 @@ class Technique:
     timeout: int = 120
     tags: frozenset[str] = frozenset()
     doc: str = ""  # full docstring, shown to the model as the tool description
+    custom_schema: dict[str, Any] | None = None  # overrides the schema derived from type hints
 
     def __post_init__(self) -> None:
         self._hints = get_type_hints(self.fn, include_extras=True)
@@ -91,9 +99,22 @@ class Technique:
         self.params = params[1:] if self.takes_ctx else params
         self._schema: dict[str, Any] | None = None
         self._secret_params = frozenset(p.name for p in self.params if _is_secret(self._hints.get(p.name)))
-        bad = self._secret_params & set(self.target_params())
+        bad = self._secret_params & {*self.target_params(), *self.target_list_params()}
         if bad:
             raise TypeError(f"{self.name}: target parameters cannot be Secret: {sorted(bad)}")
+        for p in self.params:  # fail closed: a Target we would not scope-check is a definition error
+            hint = self._hints.get(p.name)
+            is_target = target_type(hint) is not None or _list_target_type(hint) is not None
+            if is_target and p.default not in (inspect.Parameter.empty, None):
+                raise TypeError(
+                    f"{self.name}: target parameter {p.name!r} cannot have a default (defaults are "
+                    "never scope-checked); use None"
+                )
+            if target_type(hint) is None and _list_target_type(hint) is None and _mentions_target(hint):
+                raise TypeError(
+                    f"{self.name}: parameter {p.name!r} nests a Target where it cannot be scope-checked; "
+                    "use Target or list[Target]"
+                )
 
     @property
     def description(self) -> str:
@@ -105,7 +126,9 @@ class Technique:
         return self._secret_params
 
     def schema(self) -> dict[str, Any]:
-        """JSON Schema for the LLM-visible parameters."""
+        """JSON Schema for the LLM-visible parameters (or the schema given to @technique)."""
+        if self.custom_schema is not None:
+            return self.custom_schema
         if self._schema is None:
             props: dict[str, Any] = {}
             required: list[str] = []
@@ -126,14 +149,42 @@ class Technique:
         return self._schema
 
     def target_params(self) -> list[str]:
-        """Names of parameters typed Target, Url or Host."""
+        """Names of parameters typed Target (or Url, Host, Network)."""
         return [p.name for p in self.params if target_type(self._hints.get(p.name)) is not None]
+
+    def target_list_params(self) -> list[str]:
+        """Names of parameters typed ``list[Target]`` (every element is scope-checked)."""
+        return [p.name for p in self.params if _list_target_type(self._hints.get(p.name)) is not None]
+
+    def accepts_ranges(self, name: str) -> bool:
+        """Whether a target parameter is typed Network (or list[Network]) and so may be a CIDR range."""
+        hint = self._hints.get(name)
+        cls = target_type(hint) or _list_target_type(hint)
+        return cls is not None and issubclass(cls, Network)
 
     def param_type(self, name: str) -> Any:
         return self._hints.get(name, str)
 
     def is_available(self, facts: FactStore) -> bool:
         return self.needs is None or any(True for _ in self.needs(facts))
+
+    def bind(self, args: dict[str, Any]) -> dict[str, Any] | str:
+        """Validate and coerce model-provided arguments. Returns the bound args or an error string."""
+        names = {p.name for p in self.params}
+        unknown = sorted(set(args) - names)
+        if unknown:
+            return f"unknown parameter(s) {unknown}; expected {sorted(names)}"
+        out: dict[str, Any] = {}
+        for p in self.params:
+            if p.name not in args:
+                if p.default is p.empty:
+                    return f"missing required parameter {p.name!r}"
+                continue
+            try:
+                out[p.name] = _coerce(self.param_type(p.name), args[p.name])
+            except (TypeError, ValueError, OverflowError) as exc:
+                return f"{p.name}: {exc}"
+        return out
 
 
 def technique(
@@ -145,9 +196,14 @@ def technique(
     name: str | None = None,
     timeout: int = 120,
     tags: Iterable[str] = (),
+    schema: dict[str, Any] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Declare a function as a technique. The function itself is returned unchanged (still callable),
-    with the Technique attached; register it on an Engagement to use it."""
+    with the Technique attached; register it on an Engagement to use it.
+
+    `schema` replaces the JSON schema derived from type hints, for parameter shapes the derivation
+    does not cover. Type hints still decide which arguments are scope-checked or receive secrets.
+    """
 
     def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         doc = inspect.getdoc(fn) or ""
@@ -164,6 +220,7 @@ def technique(
                 timeout=timeout,
                 tags=frozenset(tags),
                 doc=doc,
+                custom_schema=schema,
             ),
         )
         return fn
@@ -190,6 +247,19 @@ def collect(*items: Any) -> list[Technique]:
 
 def _is_secret(annotation: Any) -> bool:
     return get_origin(annotation) is Annotated and Secret in get_args(annotation)[1:]
+
+
+def _list_target_type(annotation: Any) -> type[Target] | None:
+    tp = _strip(annotation)
+    if get_origin(tp) is list and get_args(tp):
+        return target_type(get_args(tp)[0])
+    return None
+
+
+def _mentions_target(annotation: Any) -> bool:
+    if isinstance(annotation, type) and issubclass(annotation, Target):
+        return True
+    return any(_mentions_target(arg) for arg in get_args(annotation))
 
 
 def target_type(annotation: Any) -> type[Target] | None:
@@ -245,3 +315,72 @@ def _json_type(annotation: Any) -> dict[str, Any]:
     if description:
         out["description"] = description
     return out
+
+
+# ---- argument coercion and results ------------------------------------------------------------
+
+
+def as_result(raw: Any) -> TechniqueResult:
+    """Normalise what a technique returned: TechniqueResult, list of facts, text, or None."""
+    if isinstance(raw, TechniqueResult):
+        return raw
+    if raw is None:
+        return TechniqueResult()
+    if isinstance(raw, str):
+        return TechniqueResult(observation=raw)
+    if isinstance(raw, list) and all(isinstance(f, Fact) for f in raw):
+        return TechniqueResult(facts=raw)
+    raise TypeError(f"technique returned {type(raw).__name__}; expected TechniqueResult, list[Fact] or str")
+
+
+def _coerce(annotation: Any, value: Any) -> Any:
+    if value is None:
+        return None
+    tp = _strip(annotation)
+    target_cls = target_type(tp)
+    if target_cls is not None:
+        return _make_target(target_cls, value)
+    if get_origin(tp) is Literal:
+        if value not in get_args(tp):
+            raise ValueError(f"must be one of {list(get_args(tp))}")
+        return value
+    if tp is bool:
+        if isinstance(value, str) and value.lower() in ("true", "false", "1", "0", "yes", "no"):
+            return value.lower() in ("true", "1", "yes")
+        if not isinstance(value, bool):
+            raise TypeError("expected a boolean")
+        return value
+    if tp is int:
+        if isinstance(value, bool):
+            raise TypeError("expected an integer")
+        return int(value)
+    if tp is float:
+        return float(value)
+    if tp is str:
+        if not isinstance(value, str | int | float):
+            raise TypeError("expected a string")
+        return str(value)
+    if get_origin(tp) is list:
+        if not isinstance(value, list):
+            raise TypeError("expected a list")
+        (item,) = get_args(tp) or (str,)
+        return [_coerce(item, v) for v in value]
+    if get_origin(tp) is dict:
+        if not isinstance(value, dict):
+            raise TypeError("expected an object")
+        _, item = get_args(tp) or (str, str)
+        return {str(k): _coerce(item, v) for k, v in value.items()}
+    return value
+
+
+def _make_target(cls: type, value: Any) -> Any:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError("expected a non-empty string target")
+    value = value.strip()
+    if issubclass(cls, Url) and not re.match(r"(?i)^https?://", value):
+        raise ValueError("expected an http:// or https:// URL")
+    if issubclass(cls, Host) and ("://" in value or "/" in value):
+        raise ValueError("expected a hostname or IP, not a URL or range")
+    if issubclass(cls, Network) and "://" in value:
+        raise ValueError("expected a hostname, IP or CIDR range, not a URL")
+    return cls(value)

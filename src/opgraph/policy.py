@@ -26,10 +26,15 @@ class Decision(StrEnum):
 
 @dataclass(frozen=True)
 class ApprovalRequest:
+    """Everything a policy or approver may base a decision on."""
+
     technique: str
     args: dict[str, Any]
     risk: Risk
     reason: str = ""
+    attack: str = ""  # MITRE ATT&CK id of the technique
+    tags: frozenset[str] = frozenset()
+    targets: tuple[str, ...] = ()  # the scope-checked targets of this call
 
 
 Approver = Callable[[ApprovalRequest], bool]
@@ -86,12 +91,17 @@ class Policy:
         """Everything allowed (still logged). Only for isolated labs, CTFs and benchmarks."""
         return cls(rules=dict.fromkeys(Risk, Decision.ALLOW))
 
-    def decide(self, risk: Risk) -> Decision:
-        return self.rules.get(risk, Decision.DENY)
+    def decide(self, request: ApprovalRequest) -> Decision:
+        """Decision for one call. The default looks only at risk; override this in a subclass to
+        decide on anything in the request (technique name, tags, targets, arguments, time of day...)."""
+        return self.rules.get(request.risk, Decision.DENY)
 
     def check(self, request: ApprovalRequest) -> str | None:
         """Return None if the call may proceed, else the reason it is blocked."""
-        decision = self.decide(request.risk)
+        try:
+            decision = Decision(self.decide(request))  # accept plain strings from subclasses
+        except ValueError:
+            decision = Decision.DENY  # anything unrecognised fails closed
         if decision is Decision.DENY:
             return f"denied by policy ({request.risk})"
         if decision is Decision.APPROVE:

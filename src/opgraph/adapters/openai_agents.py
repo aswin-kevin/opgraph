@@ -15,6 +15,7 @@ command still ends at its own timeout, and `Engagement.close()` kills it immedia
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from typing import Any
 
 try:
@@ -25,26 +26,31 @@ except ImportError as exc:  # pragma: no cover - depends on installed extras
     ) from exc
 
 from ..engagement import Engagement
-from ..tools import run_tool, tool_specs
+from ..tools import ToolSpec, run_tool, tool_specs
 
 
-def to_function_tools(eng: Engagement) -> list[FunctionTool]:
-    """One FunctionTool per technique, plus the `world` and `propose_finding` meta-tools."""
-    return [_tool(eng, spec.name, spec.description, spec.parameters) for spec in tool_specs(eng)]
+def to_function_tools(
+    eng: Engagement, names: Collection[str] | None = None, include_meta: bool = True
+) -> list[FunctionTool]:
+    """One FunctionTool per technique (optionally only `names`), plus the meta-tools."""
+    specs = tool_specs(eng, names, include_meta)
+    return [_tool(eng, spec, names, include_meta) for spec in specs]
 
 
-def _tool(eng: Engagement, name: str, description: str, schema: dict[str, Any]) -> FunctionTool:
+def _tool(eng: Engagement, spec: ToolSpec, names: Collection[str] | None, include_meta: bool) -> FunctionTool:
     async def invoke(ctx: Any, raw_arguments: str) -> str:
-        return await asyncio.to_thread(run_tool, eng, name, raw_arguments)
+        return await asyncio.to_thread(
+            run_tool, eng, spec.name, raw_arguments, names=names, include_meta=include_meta
+        )
 
     def enabled(ctx: Any, agent: Any) -> bool:
-        technique = eng.techniques.get(name)
+        technique = eng.techniques.get(spec.name)
         return technique is None or technique.is_available(eng.facts)
 
     return FunctionTool(
-        name=name,
-        description=description,
-        params_json_schema=schema,
+        name=spec.name,
+        description=spec.description,
+        params_json_schema=spec.parameters,
         on_invoke_tool=invoke,
         strict_json_schema=False,  # our schemas have optional parameters with defaults
         is_enabled=enabled,

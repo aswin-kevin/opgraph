@@ -13,15 +13,17 @@ Blocked calls never raise; they return a result explaining why.
 
 from __future__ import annotations
 
+import inspect
 import itertools
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, get_args, get_origin
+from types import MappingProxyType
+from typing import Any
 
 from .effects import EffectStack
 from .executors import ExecResult, Executor, LocalExecutor
@@ -31,10 +33,10 @@ from .observe import sanitize, untrusted
 from .policy import ApprovalRequest, Policy
 from .render import format_fact, world
 from .scope import CheckedTarget, OutOfScope, Scope
-from .technique import Host, Technique, TechniqueResult, Url, _strip, collect, target_type
+from .technique import Technique, TechniqueResult, as_result, collect
+from .vault import Vault
 
 _VULN_CLASS = re.compile(r"[a-z0-9_.-]{1,64}")
-_SECRET_REF = re.compile(r"\{\{cred:(\d+)\}\}")
 _MAX_LOGGED_OBSERVATION = 50_000
 
 
@@ -46,6 +48,17 @@ class CallResult:
     text: str = ""  # sanitized, capped observation (or error message)
     new_facts: list[Fact] = field(default_factory=list)
     blocked: str | None = None  # reason, if the call never ran
+
+    def to_dict(self) -> dict[str, Any]:
+        """Structured form, for builders who return JSON to their model or UI."""
+        return {
+            "technique": self.technique,
+            "call_id": self.call_id,
+            "ok": self.ok,
+            "blocked": self.blocked,
+            "text": self.text,
+            "new_facts": [f.to_dict() for f in self.new_facts],
+        }
 
     def to_tool_text(self) -> str:
         """The text adapters hand back to the model."""
@@ -76,12 +89,18 @@ class Ctx:
     """What a technique gets as its first argument (`ctx`)."""
 
     def __init__(
-        self, eng: Engagement, technique: Technique, call_id: str, targets: dict[str, CheckedTarget]
+        self,
+        eng: Engagement,
+        technique: Technique,
+        call_id: str,
+        targets: dict[str, CheckedTarget],
+        target_lists: dict[str, list[CheckedTarget]] | None = None,
     ):
         self._eng = eng
         self.technique = technique
         self.call_id = call_id
         self.targets = targets  # checked target per Target-typed argument (with pinned IP)
+        self.target_lists = target_lists or {}  # checked targets per list[Target] argument
 
     @property
     def facts(self) -> FactStore:
@@ -91,13 +110,45 @@ class Ctx:
     def scope(self) -> Scope:
         return self._eng.scope
 
-    def exec(self, argv: list[str], timeout: int | None = None, stdin: str | None = None) -> ExecResult:
+    @property
+    def config(self) -> Mapping[str, Any]:
+        """The engagement's configuration (read-only)."""
+        return self._eng.config
+
+    @property
+    def options(self) -> Mapping[str, Any]:
+        """This technique's own options: ``config[<technique name>]`` (empty if not set)."""
+        value = self._eng.config.get(self.technique.name, {})
+        return value if isinstance(value, Mapping) else {}
+
+    @property
+    def timeout(self) -> int:
+        """This technique's timeout: ``config["timeouts"][<name>]`` or the declared default."""
+        timeouts = self._eng.config.get("timeouts", {})
+        return int(timeouts.get(self.technique.name, self.technique.timeout))
+
+    def tool(self, name: str) -> str:
+        """Executable to run for a tool: ``config["tools"][name]`` or the name itself."""
+        return str(self._eng.config.get("tools", {}).get(name, name))
+
+    def exec(
+        self,
+        argv: list[str],
+        timeout: int | None = None,
+        stdin: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ExecResult:
         """Run argv on the engagement's executor. Never pass a shell string."""
-        result = self._eng.executor.run(argv, timeout or self.technique.timeout, stdin)
+        if env:
+            if not _accepts_env(self._eng.executor):
+                raise TypeError(f"{type(self._eng.executor).__name__}.run() does not accept env=")
+            result = self._eng.executor.run(argv, timeout or self.timeout, stdin, env=env)  # type: ignore[call-arg]
+        else:
+            result = self._eng.executor.run(argv, timeout or self.timeout, stdin)
         self._eng.ledger.record(
             "exec",
             call_id=self.call_id,
-            argv=self._eng._redact(argv),
+            argv=self._eng.vault.redact(argv),
             rc=result.rc,
             duration=round(result.duration, 3),
             timed_out=result.timed_out,
@@ -116,6 +167,11 @@ class Ctx:
         self._eng.ledger.record("log", call_id=self.call_id, message=message)
 
 
+def _accepts_env(executor: Executor) -> bool:
+    params = inspect.signature(executor.run).parameters
+    return "env" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
 class Engagement:
     def __init__(
         self,
@@ -127,7 +183,14 @@ class Engagement:
         name: str = "engagement",
         log_path: str | Path | None = None,
         observation_cap: int = 6000,
+        config: Mapping[str, Any] | None = None,
     ):
+        """
+        `config` is free-form settings for techniques, read through `Ctx`. Built-in packs use:
+        ``tools`` (executable per tool name), ``timeouts`` (seconds per technique), ``wordlists``
+        (name -> path), ``http_proxy`` (e.g. Burp), ``http_headers`` (sent with every web request,
+        e.g. a bug-bounty identification header), and a dict of options per technique name.
+        """
         self.name = name
         self.scope = scope
         self.policy = policy or Policy.safe()
@@ -136,8 +199,9 @@ class Engagement:
         self.ledger = Ledger(log_path)
         self.effects = EffectStack()
         self.observation_cap = observation_cap
+        self.config: Mapping[str, Any] = MappingProxyType(dict(config or {}))
         self.techniques: dict[str, Technique] = {}
-        self._vault: dict[str, str] = {}  # handle number -> secret
+        self.vault = Vault()  # secrets; the model only sees {{cred:N}} handles
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
         self._workdir_lock = threading.Lock()
@@ -172,7 +236,7 @@ class Engagement:
         try:
             return self._call(name, dict(args or {}), call_id)
         except Exception as exc:  # last line of defence; the agent loop must keep running
-            message = self._redact(f"internal error: {type(exc).__name__}: {exc}")
+            message = self.vault.redact(f"internal error: {type(exc).__name__}: {exc}")
             self.ledger.record("error", call_id=call_id, technique=name, error=message)
             return CallResult(name, call_id, ok=False, text=message)
 
@@ -183,7 +247,7 @@ class Engagement:
         if t is None:
             return self._blocked(name, call_id, args, f"unknown technique; known: {sorted(self.techniques)}")
 
-        bound = _bind(t, args)
+        bound = t.bind(args)
         if isinstance(bound, str):
             return self._blocked(name, call_id, args, f"invalid arguments: {bound}")
         if not t.is_available(self.facts):
@@ -199,34 +263,45 @@ class Engagement:
             if value is None:
                 continue
             try:
-                checked[pname] = self.scope.check(value, resolver)
+                checked[pname] = self._check_target(t, pname, value, resolver)
+            except OutOfScope as exc:
+                return self._blocked(name, call_id, args, f"out_of_scope: {exc}")
+        checked_lists: dict[str, list[CheckedTarget]] = {}
+        for pname in t.target_list_params():
+            try:
+                checked_lists[pname] = [
+                    self._check_target(t, pname, v, resolver) for v in bound.get(pname) or []
+                ]
             except OutOfScope as exc:
                 return self._blocked(name, call_id, args, f"out_of_scope: {exc}")
         # Credential handles are swapped for real secrets only in parameters declared as Secret.
-        resolved = {k: self._resolve_secrets(v) if k in t.secret_params() else v for k, v in bound.items()}
+        resolved = {k: self.vault.resolve(v) if k in t.secret_params() else v for k, v in bound.items()}
 
-        reason = self.policy.check(ApprovalRequest(name, bound, t.risk))
+        all_checked = [*checked.values(), *(c for group in checked_lists.values() for c in group)]
+        targets = tuple(c.target.raw for c in all_checked)
+        request = ApprovalRequest(name, bound, t.risk, attack=t.attack, tags=t.tags, targets=targets)
+        reason = self.policy.check(request)
         if reason:
             return self._blocked(name, call_id, args, reason)
 
-        target = next(iter(checked.values())).target.raw if checked else ""
-        self.ledger.count(name, target)
+        for target in targets or ("",):
+            self.ledger.count(name, target)
         self.ledger.record(
             "call", call_id=call_id, technique=name, args=bound, risk=str(t.risk), attack=t.attack
         )
-        ctx = Ctx(self, t, call_id, checked)
+        ctx = Ctx(self, t, call_id, checked, checked_lists)
         try:
             raw = t.fn(ctx, **resolved) if t.takes_ctx else t.fn(**resolved)
-            result = _as_result(raw)
+            result = as_result(raw)
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             self.ledger.record("error", call_id=call_id, technique=name, error=message)
-            return CallResult(name, call_id, ok=False, text=self._redact(message))
+            return CallResult(name, call_id, ok=False, text=self.vault.redact(message))
 
         new = self._ingest(t, call_id, result)
         if self._closed:  # closed while this call ran: clean up whatever it just created
             self.effects.dispose()
-        observation = self._redact(sanitize(result.observation))
+        observation = self.vault.redact(sanitize(result.observation))
         self.ledger.record(
             "result",
             call_id=call_id,
@@ -236,9 +311,19 @@ class Engagement:
         text = untrusted(observation, self.observation_cap) if observation.strip() else ""
         return CallResult(name, call_id, ok=True, text=text, new_facts=new)
 
+    def _check_target(
+        self, t: Technique, pname: str, value: str, resolver: Callable[[str], str] | None
+    ) -> CheckedTarget:
+        checked = self.scope.check(value, resolver)
+        if checked.target.is_network and not t.accepts_ranges(pname):
+            raise OutOfScope(value, f"{pname!r} takes a single target; only Network parameters take ranges")
+        return checked
+
     def _blocked(self, name: str, call_id: str, args: dict[str, Any], reason: str) -> CallResult:
-        reason = self._redact(reason)
-        self.ledger.record("blocked", call_id=call_id, technique=name, args=self._redact(args), reason=reason)
+        reason = self.vault.redact(reason)
+        self.ledger.record(
+            "blocked", call_id=call_id, technique=name, args=self.vault.redact(args), reason=reason
+        )
         return CallResult(name, call_id, ok=False, blocked=reason)
 
     def _ingest(self, t: Technique, call_id: str, result: TechniqueResult) -> list[Fact]:
@@ -252,14 +337,14 @@ class Engagement:
     def _prepare(self, fact: Fact, source: str, call_id: str) -> Fact:
         attrs = dict(fact.attrs)
         if fact.kind == "credential" and "secret" in attrs:
-            attrs["secret_ref"] = self._store_secret(str(attrs.pop("secret")))
+            attrs["secret_ref"] = self.vault.store(str(attrs.pop("secret")))
         if fact.kind == "finding" and attrs.get("status") == "confirmed" and not attrs.get("evidence"):
             attrs["status"] = "proposed"  # no finding without evidence
         source = fact.source if fact.source != "unknown" else source
         return replace(
             fact,
-            key=self._redact(fact.key),
-            attrs=self._redact(attrs),
+            key=self.vault.redact(fact.key),
+            attrs=self.vault.redact(attrs),
             source=source,
             call_id=fact.call_id or call_id,
         )
@@ -274,36 +359,28 @@ class Engagement:
 
         return undo
 
-    # ---- secrets -------------------------------------------------------------------------------
-
-    def _store_secret(self, secret: str) -> str:
-        with self._lock:
-            for handle, known in self._vault.items():
-                if known == secret:
-                    return _handle(handle)
-            handle = str(len(self._vault) + 1)
-            self._vault[handle] = secret
-        return _handle(handle)
-
-    def _resolve_secrets(self, value: Any) -> Any:
-        if isinstance(value, str):
-            return _SECRET_REF.sub(lambda m: self._vault.get(m.group(1), m.group(0)), value)
-        if isinstance(value, list):
-            return [self._resolve_secrets(v) for v in value]
-        if isinstance(value, dict):
-            return {k: self._resolve_secrets(v) for k, v in value.items()}
-        return value
-
-    def _redact(self, value: Any) -> Any:
-        """Replace known secrets with their handles in strings, lists, tuples and dicts."""
-        with self._lock:
-            known = [(secret, _handle(h)) for h, secret in self._vault.items() if len(secret) >= 4]
-        return _replace_all(value, known) if known else value
-
     # ---- world, findings -----------------------------------------------------------------------
 
     def world(self, budget_tokens: int = 1500) -> str:
+        """The fact graph and available actions as compact text for a model."""
         return world(self.facts, self.techniques.values(), budget_tokens)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Structured state for custom prompts and UIs: all facts plus each technique's availability."""
+        return {
+            "facts": [f.to_dict() for f in self.facts],
+            "techniques": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "risk": str(t.risk),
+                    "attack": t.attack,
+                    "tags": sorted(t.tags),
+                    "available": t.is_available(self.facts),
+                }
+                for t in self.techniques.values()
+            ],
+        }
 
     def propose_finding(self, vuln_class: str, target: str, rationale: str = "") -> Fact:
         """Record a claimed weakness. It stays `proposed` until `verify` finds evidence.
@@ -459,104 +536,3 @@ class Engagement:
     def _next_id(self) -> str:
         with self._lock:
             return f"c{next(self._ids)}"
-
-
-def _handle(number: str) -> str:
-    return "{{cred:" + number + "}}"
-
-
-def _replace_all(value: Any, pairs: list[tuple[str, str]]) -> Any:
-    if isinstance(value, str):
-        for old, new in pairs:
-            value = value.replace(old, new)
-        return value
-    if isinstance(value, list | tuple):
-        return type(value)(_replace_all(v, pairs) for v in value)
-    if isinstance(value, dict):
-        return {k: _replace_all(v, pairs) for k, v in value.items()}
-    return value
-
-
-# ---- helpers ----------------------------------------------------------------------------------------
-
-
-def _as_result(raw: Any) -> TechniqueResult:
-    if isinstance(raw, TechniqueResult):
-        return raw
-    if raw is None:
-        return TechniqueResult()
-    if isinstance(raw, str):
-        return TechniqueResult(observation=raw)
-    if isinstance(raw, list) and all(isinstance(f, Fact) for f in raw):
-        return TechniqueResult(facts=raw)
-    raise TypeError(f"technique returned {type(raw).__name__}; expected TechniqueResult, list[Fact] or str")
-
-
-def _bind(t: Technique, args: dict[str, Any]) -> dict[str, Any] | str:
-    """Validate and coerce LLM-provided arguments. Returns the bound args or an error string."""
-    names = {p.name for p in t.params}
-    unknown = sorted(set(args) - names)
-    if unknown:
-        return f"unknown parameter(s) {unknown}; expected {sorted(names)}"
-    out: dict[str, Any] = {}
-    for p in t.params:
-        if p.name not in args:
-            if p.default is p.empty:
-                return f"missing required parameter {p.name!r}"
-            continue
-        try:
-            out[p.name] = _coerce(t.param_type(p.name), args[p.name])
-        except (TypeError, ValueError, OverflowError) as exc:
-            return f"{p.name}: {exc}"
-    return out
-
-
-def _coerce(annotation: Any, value: Any) -> Any:
-    if value is None:
-        return None
-    tp = _strip(annotation)
-    target_cls = target_type(tp)
-    if target_cls is not None:
-        return _make_target(target_cls, value)
-    if get_origin(tp) is Literal:
-        if value not in get_args(tp):
-            raise ValueError(f"must be one of {list(get_args(tp))}")
-        return value
-    if tp is bool:
-        if isinstance(value, str) and value.lower() in ("true", "false", "1", "0", "yes", "no"):
-            return value.lower() in ("true", "1", "yes")
-        if not isinstance(value, bool):
-            raise TypeError("expected a boolean")
-        return value
-    if tp is int:
-        if isinstance(value, bool):
-            raise TypeError("expected an integer")
-        return int(value)
-    if tp is float:
-        return float(value)
-    if tp is str:
-        if not isinstance(value, str | int | float):
-            raise TypeError("expected a string")
-        return str(value)
-    if get_origin(tp) is list:
-        if not isinstance(value, list):
-            raise TypeError("expected a list")
-        (item,) = get_args(tp) or (str,)
-        return [_coerce(item, v) for v in value]
-    if get_origin(tp) is dict:
-        if not isinstance(value, dict):
-            raise TypeError("expected an object")
-        _, item = get_args(tp) or (str, str)
-        return {str(k): _coerce(item, v) for k, v in value.items()}
-    return value
-
-
-def _make_target(cls: type, value: Any) -> Any:
-    if not isinstance(value, str) or not value.strip():
-        raise TypeError("expected a non-empty string target")
-    value = value.strip()
-    if issubclass(cls, Url) and not re.match(r"(?i)^https?://", value):
-        raise ValueError("expected an http:// or https:// URL")
-    if issubclass(cls, Host) and ("://" in value or "/" in value):
-        raise ValueError("expected a hostname or IP, not a URL")
-    return cls(value)

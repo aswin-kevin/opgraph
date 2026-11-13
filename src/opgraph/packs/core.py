@@ -19,10 +19,10 @@ def shell(ctx: Ctx, command: str) -> TechniqueResult:
     warnings = ctx.scope.audit_command(command)
     for warning in warnings:
         ctx.log(f"shell scope warning: {warning}")
-    result = ctx.exec(["bash", "-c", f"cd {shlex.quote(ctx.workdir())} && {command}"])
+    result = ctx.exec([ctx.tool("bash"), "-c", f"cd {shlex.quote(ctx.workdir())} && {command}"])
     parts = [result.output]
     if result.timed_out:
-        parts.append(f"[timed out after {ctx.technique.timeout}s]")
+        parts.append(f"[timed out after {ctx.timeout}s]")
     elif result.rc:
         parts.append(f"[exit code {result.rc}]")
     if warnings:

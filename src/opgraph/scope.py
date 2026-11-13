@@ -24,6 +24,15 @@ _METADATA = (
 )
 
 
+# IPv6 prefixes that carry IPv4 addresses (mapped, NAT64, IPv4-compatible): single addresses are
+# translated by canonical_ip, ranges in them are refused.
+_V4_IN_V6 = (
+    ipaddress.ip_network("::ffff:0:0/96"),
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("::/96"),
+)
+
+
 class OutOfScope(Exception):
     def __init__(self, target: str, reason: str, ip: str | None = None):
         self.target, self.reason, self.ip = target, reason, ip
@@ -33,7 +42,8 @@ class OutOfScope(Exception):
 
 @dataclass(frozen=True)
 class CheckedTarget:
-    """A target that passed the scope check. `ip` is the pinned address tools must use."""
+    """A target that passed the scope check. `ip` is the pinned address tools must use (for a CIDR
+    range it is the normalised network, e.g. ``10.0.0.0/24``)."""
 
     target: ParsedTarget
     ip: str
@@ -51,7 +61,13 @@ class Scope:
       are resolved (never out-of-scope ones, so DNS cannot be used as a side channel); the answer is
       pinned, and must not be loopback, metadata, multicast or reserved space unless listed in `nets`.
     - `exclude` (networks or domains) always wins.
-    - If `ports` is set, explicit or scheme-default ports must be in it.
+    - A CIDR range (10.0.0.0/24) is in scope only if it lies entirely inside one of `nets` and does
+      not overlap `exclude`.
+    - If `ports` is set, explicit or scheme-default ports must be in it; a URL whose scheme has no
+      known default port must then name its port explicitly.
+
+    Note: when tools are sent through a proxy (e.g. ``config["http_proxy"]``), the proxy resolves
+    hostnames itself, so DNS pinning no longer applies to those requests.
     """
 
     def __init__(
@@ -116,8 +132,13 @@ class Scope:
         except TargetError as exc:
             raise OutOfScope(target, str(exc)) from None
 
-        if self.ports is not None and parsed.port is not None and parsed.port not in self.ports:
-            raise OutOfScope(target, f"port {parsed.port} not in scope")
+        if parsed.is_network:
+            return self._check_network(target, parsed)
+        if self.ports is not None:
+            if parsed.port is not None and parsed.port not in self.ports:
+                raise OutOfScope(target, f"port {parsed.port} not in scope")
+            if parsed.port is None and parsed.scheme:
+                raise OutOfScope(target, f"no known default port for {parsed.scheme}://; give the port")
 
         literal_ip = canonical_ip(parsed.host)
         if literal_ip is not None:
@@ -156,6 +177,16 @@ class Scope:
         return warnings
 
     # ---- internals ----------------------------------------------------------------------------
+
+    def _check_network(self, target: str, parsed: ParsedTarget) -> CheckedTarget:
+        network = ipaddress.ip_network(parsed.host)
+        if isinstance(network, ipaddress.IPv6Network) and any(network.overlaps(n) for n in _V4_IN_V6):
+            raise OutOfScope(target, "IPv6 range embedding IPv4 addresses; use the IPv4 range instead")
+        if any(network.overlaps(ex) for ex in self.exclude_nets if ex.version == network.version):
+            raise OutOfScope(target, "range overlaps excluded addresses; split it around them")
+        if not any(network.subnet_of(n) for n in self.nets if n.version == network.version):  # type: ignore[arg-type]
+            raise OutOfScope(target, "range is not entirely inside the scope networks")
+        return CheckedTarget(parsed, str(network))
 
     def _check_ip(self, target: str, ip: IPAddress, domain_ok: bool) -> None:
         if any(ip in net for net in self.exclude_nets):

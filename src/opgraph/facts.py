@@ -31,8 +31,27 @@ KEY_FIELDS: dict[str, tuple[str, ...]] = {
     "artifact": ("target", "name"),
     "note": ("id",),
 }
+_BUILTIN_KINDS = frozenset(KEY_FIELDS)
 
 Confidence = str  # "high" | "medium" | "low"
+
+
+def define_kind(kind: str, key_fields: tuple[str, ...]) -> None:
+    """Name the key parts of a custom fact kind, so `fact.get(...)` and `store.query(...)` can use
+    them, e.g. ``define_kind("vhost", ("ip", "name"))`` then ``store.query("vhost", name="dev")``.
+
+    Kinds are open strings: facts of an undefined kind work too, with positional keys only.
+    Definitions are process-wide (like a schema); built-in kinds cannot be redefined and a custom
+    kind cannot be redefined with different fields.
+    """
+    if kind in _BUILTIN_KINDS:
+        raise ValueError(f"{kind!r} is a built-in kind")
+    if not key_fields or not all(isinstance(f, str) and f for f in key_fields):
+        raise ValueError("key_fields must be a non-empty tuple of names")
+    existing = KEY_FIELDS.get(kind)
+    if existing is not None and existing != tuple(key_fields):
+        raise ValueError(f"{kind!r} is already defined with key fields {existing}")
+    KEY_FIELDS[kind] = tuple(key_fields)
 
 
 @dataclass(frozen=True, eq=False)

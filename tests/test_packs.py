@@ -158,7 +158,7 @@ def test_remote_command_quoting() -> None:
 def test_http_request_secret_handles_in_headers() -> None:
     ex = FakeExecutor({"curl": "HTTP/1.1 200 OK\r\n\r\n"})
     eng = make(ex)
-    eng._store_secret("Bearer s3cr3t-token")
+    eng.vault.store("Bearer s3cr3t-token")
     eng.call("http_request", {"url": "http://127.0.0.1/", "headers": {"Authorization": "{{cred:1}}"}})
     argv, _ = ex.last("curl")
     assert "Authorization: Bearer s3cr3t-token" in argv  # the tool gets the real value

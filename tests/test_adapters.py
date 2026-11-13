@@ -237,3 +237,20 @@ def test_mcp_cli_cleans_up_when_client_leaves_mid_call(tmp_path) -> None:
     assert rows[-1]["event"] == "dispose"
     workdirs = [line.split()[-1] for line in rows[-1]["lines"] if "workdir" in line]
     assert workdirs and not any(os.path.exists(path) for path in workdirs)
+
+
+def test_mcp_cli_custom_pack_and_config(tmp_path) -> None:
+    pytest.importorskip("mcp")
+    from opgraph.adapters.mcp_server import build_engagement, parse_args
+
+    scope = tmp_path / "scope.json"
+    scope.write_text('{"nets": ["127.0.0.1/32"]}')
+    config = tmp_path / "config.toml"
+    config.write_text('http_proxy = "http://127.0.0.1:8080"\n[timeouts]\nshell = 30\n')
+    args = parse_args(["--scope", str(scope), "--pack", "opgraph.packs.core", "--config", str(config)])
+    built = build_engagement(args)
+    assert sorted(built.techniques) == ["note", "shell"]
+    assert built.config["timeouts"]["shell"] == 30
+    built.close()
+    with pytest.raises(SystemExit):
+        parse_args(["--scope", str(scope), "--pack", "os; rm -rf /"])

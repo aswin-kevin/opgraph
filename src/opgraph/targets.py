@@ -13,7 +13,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
-DEFAULT_PORTS = {"http": 80, "https": 443, "ftp": 21, "ssh": 22}
+# Default ports per URL scheme, used for scope port checks and URL normalisation.
+DEFAULT_PORTS = {
+    "http": 80, "https": 443, "ws": 80, "wss": 443, "ftp": 21, "ftps": 990, "sftp": 22, "ssh": 22,
+    "telnet": 23, "smtp": 25, "smtps": 465, "dns": 53, "pop3": 110, "imap": 143, "imaps": 993,
+    "ldap": 389, "ldaps": 636, "smb": 445, "rdp": 3389, "vnc": 5900, "mysql": 3306,
+    "postgres": 5432, "postgresql": 5432, "mssql": 1433, "oracle": 1521, "mongodb": 27017,
+    "redis": 6379, "amqp": 5672, "mqtt": 1883, "winrm": 5985, "kerberos": 88,
+}  # fmt: skip
 
 
 class TargetError(ValueError):
@@ -27,6 +34,7 @@ class ParsedTarget:
     host: str  # lowercase hostname or IP text, no brackets, no userinfo
     port: int | None  # explicit port, or the scheme's default port
     path: str  # "" for bare hosts
+    is_network: bool = False  # a CIDR range such as 10.0.0.0/24 (host holds the network)
 
 
 def parse_target(raw: str) -> ParsedTarget:
@@ -42,6 +50,14 @@ def parse_target(raw: str) -> ParsedTarget:
 
     if _is_bare_ipv6(text):
         return ParsedTarget(raw, None, str(ipaddress.ip_address(text)), None, "")
+    if "://" not in text and "/" in text:
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            # "name/8" or "10.5/8": tools like nmap would expand it as a range, so never treat
+            # it as a single host with a path.
+            raise TargetError(f"invalid target (not a host, URL or CIDR range): {raw!r}") from None
+        return ParsedTarget(raw, None, str(network), None, "", is_network=True)
 
     has_scheme = "://" in text
     try:

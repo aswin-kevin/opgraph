@@ -380,3 +380,25 @@ def test_close_kills_running_commands() -> None:
     eng.close()
     worker.join(timeout=10)
     assert not worker.is_alive() and time.monotonic() - started < 5
+
+
+def test_markdown_report(ex: FakeExecutor) -> None:
+    from opgraph.report import to_markdown
+
+    eng = make(ex, Policy.lab())
+    eng.call("port_scan", {"host": "10.0.0.5"})
+    eng.call("fetch", {"url": "http://10.0.0.5/admin"})
+    f = eng.propose_finding("sqli", "http://10.0.0.5/admin", "error `| <b>` on quote")
+    eng.ledger.events[-1]["observation"] = "SQL syntax error near ''"
+    eng.call("leave_mess", {"host": "10.0.0.5"})
+    eng.dispose()
+    eng.ledger.record("result", call_id="c9", new_facts=0, observation="You have an error in your SQL syntax")
+    eng.verify(f.id, RegexCheck("error in your SQL syntax", name="sql-error"))
+    md = to_markdown(eng)
+    assert md.startswith("# Engagement report: `engagement`")
+    assert "### CONFIRMED: `sqli` at `http://10.0.0.5/admin`" in md
+    assert "- Verified by: `sql-error`" in md
+    assert "1. `SVC 80/tcp" in md and "2. `EP http://10.0.0.5/admin" in md  # evidence chain
+    assert "| `port_scan` | `10.0.0.5` | 1 |" in md
+    assert "**Manual cleanup required:**" in md and "mess" in md
+    assert "<b>" in md and "`| <b>`" not in md  # target text cannot break out of its code span

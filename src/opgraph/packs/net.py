@@ -11,7 +11,7 @@ from ..facts import Fact, service
 from ..facts import host as host_fact
 from ..render import format_fact
 from ..targets import canonical_ip
-from ..technique import Host, TechniqueResult, technique
+from ..technique import Network, TechniqueResult, technique
 
 _PORTS = re.compile(r"^(top-\d{1,4}|\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*)$")
 
@@ -19,10 +19,13 @@ _PORTS = re.compile(r"^(top-\d{1,4}|\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*)$")
 @technique(risk="intrusive", attack="T1046", timeout=600)
 def port_scan(
     ctx: Ctx,
-    host: Host,
+    host: Annotated[Network, "host, IP or CIDR range"],
     ports: Annotated[str, "'top-100' (default), 'top-1000', or a list like '22,80,8000-8100'"] = "top-100",
 ) -> TechniqueResult:
-    """TCP connect scan with service detection (nmap -sT -sV, polite timing). Yields service facts."""
+    """TCP connect scan with service detection (nmap -sT -sV, polite timing). Yields service facts.
+
+    Options (config["port_scan"]): timing (T0-T5, default T3), scripts (default "http-title,ftp-anon").
+    """
     if not _PORTS.match(ports):
         raise ValueError("ports must be 'top-N' or a list like '22,80,8000-8100'")
     port_args = ["--top-ports", ports[4:]] if ports.startswith("top-") else ["-p", ports]
@@ -34,9 +37,15 @@ def port_scan(
             outside = sorted(expand_ports(ports) - allowed)
             if outside:
                 raise ValueError(f"ports outside scope: {outside[:10]}; allowed: {sorted(allowed)}")
-    argv = ["nmap", "-sT", "-sV", "-Pn", "-T3", "--max-retries", "2", "--open"]
-    argv += ["--script", "http-title,ftp-anon"]
-    argv += ["--host-timeout", f"{max(ctx.technique.timeout - 30, 30)}s", "-oX", "-", *port_args]
+    timing = str(ctx.options.get("timing", "T3"))
+    scripts = str(ctx.options.get("scripts", "http-title,ftp-anon"))
+    if not re.fullmatch(r"T[0-5]", timing):
+        raise ValueError("timing option must be T0..T5")
+    if not re.fullmatch(r"[a-z0-9_,-]*", scripts):
+        raise ValueError("scripts option must be a comma-separated list of nmap script names")
+    argv = [ctx.tool("nmap"), "-sT", "-sV", "-Pn", f"-{timing}", "--max-retries", "2", "--open"]
+    argv += ["--script", scripts] if scripts else []
+    argv += ["--host-timeout", f"{max(ctx.timeout - 30, 30)}s", "-oX", "-", *port_args]
     argv.append(ctx.targets["host"].ip)  # always an IP: the pinned address
 
     result = ctx.exec(argv)
@@ -64,7 +73,7 @@ def expand_ports(spec: str) -> set[int]:
 def _key_by_name(facts: list[Fact], name: str) -> list[Fact]:
     """When the agent scanned a hostname, key facts by that name (IP kept as an attribute), so
     they connect to endpoint facts for URLs that use the same name."""
-    if canonical_ip(name) is not None:
+    if canonical_ip(name) is not None or "/" in name:  # an IP or a range: keep IP keys
         return facts
     out = []
     for f in facts:

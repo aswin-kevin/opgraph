@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -11,7 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -40,6 +41,12 @@ class ExecResult:
 
 
 class Executor(Protocol):
+    """Runs argv lists somewhere. Implement this to run tools in containers, cloud workers, etc.
+
+    Implementations may also accept an optional ``env: Mapping[str, str]`` keyword (extra environment
+    variables) and a ``kill_running()`` method; both are used only when present.
+    """
+
     def run(self, argv: list[str], timeout: int = 120, stdin: str | None = None) -> ExecResult: ...
 
     def resolve(self, host: str) -> str: ...
@@ -52,7 +59,13 @@ class LocalExecutor:
         self._running: set[subprocess.Popen[bytes]] = set()
         self._lock = threading.Lock()
 
-    def run(self, argv: list[str], timeout: int = 120, stdin: str | None = None) -> ExecResult:
+    def run(
+        self,
+        argv: list[str],
+        timeout: int = 120,
+        stdin: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ExecResult:
         _check_argv(argv)
         start = time.monotonic()
         try:
@@ -62,6 +75,7 @@ class LocalExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
+                env={**os.environ, **_check_env(env)} if env else None,
             )
         except OSError as exc:
             return ExecResult(argv, 127, "", f"{type(exc).__name__}: {exc}", 0.0)
@@ -122,11 +136,24 @@ def _kill_group(proc: subprocess.Popen[bytes]) -> None:
         proc.kill()
 
 
-def remote_command(argv: list[str], timeout: int) -> str:
+def remote_command(argv: list[str], timeout: int, env: Mapping[str, str] | None = None) -> str:
     """Shell-quote argv for a remote shell, wrapped in coreutils `timeout` so the remote process
     dies even if the SSH connection is dropped."""
     _check_argv(argv)
-    return shlex.join(["timeout", "-k", "5", str(timeout), *argv])
+    assignments = [f"{k}={v}" for k, v in _check_env(env).items()]
+    prefix = ["env", *assignments] if assignments else []
+    return shlex.join(["timeout", "-k", "5", str(timeout), *prefix, *argv])
+
+
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def _check_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    env = dict(env or {})
+    for name, value in env.items():
+        if not _ENV_NAME.fullmatch(name) or not isinstance(value, str) or "\0" in value:
+            raise ValueError(f"invalid environment variable: {name!r}")
+    return env
 
 
 class SSHExecutor:
@@ -165,8 +192,16 @@ class SSHExecutor:
             ]  # fmt: skip
         return [*argv, *self.options, self.destination, "--"]
 
-    def run(self, argv: list[str], timeout: int = 120, stdin: str | None = None) -> ExecResult:
-        command = remote_command(argv, timeout)
+    def run(
+        self,
+        argv: list[str],
+        timeout: int = 120,
+        stdin: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ExecResult:
+        """Run argv remotely. Note: `env` values are part of the remote command line (visible to
+        other users of the remote box via `ps`); do not pass long-lived secrets this way."""
+        command = remote_command(argv, timeout, env)
         # Local safety net: the remote `timeout` should fire first.
         result = self._local.run([*self._ssh_argv(), command], timeout + 15, stdin)
         result.argv = argv

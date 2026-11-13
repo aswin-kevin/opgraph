@@ -14,7 +14,8 @@ from ..targets import normalize_url
 from ..technique import Secret, TechniqueResult, Url, technique
 from ._pinning import curl_pin, pinned_url
 
-WORDLISTS = {
+# Default wordlists (Kali paths). Override or extend with Engagement(config={"wordlists": {...}}).
+DEFAULT_WORDLISTS = {
     "small": "/usr/share/wordlists/dirb/small.txt",
     "common": "/usr/share/wordlists/dirb/common.txt",
     "big": "/usr/share/wordlists/dirb/big.txt",
@@ -41,13 +42,11 @@ def http_request(
     if not _SESSION.match(session):
         raise ValueError("session must be 1-32 letters, digits, '-' or '_'")
     jar = f"{ctx.workdir()}/cookies-{session}.txt"
-    max_time = max(ctx.technique.timeout - 5, 5)
-    argv = ["curl", "-sS", "-i", "-k", "--path-as-is", "--max-time", str(max_time)]
+    max_time = max(ctx.timeout - 5, 5)
+    argv = [ctx.tool("curl"), "-sS", "-i", "-k", "--path-as-is", "--max-time", str(max_time)]
     argv += ["--connect-timeout", "10", "-X", method, "-b", jar, "-c", jar]
-    argv += curl_pin(ctx.targets["url"])
-    for name, value in (headers or {}).items():
-        if not _HEADER_NAME.match(name) or "\r" in value or "\n" in value:
-            raise ValueError(f"invalid header: {name!r}")
+    argv += curl_pin(ctx.targets["url"]) + proxy_args(ctx, "-x")
+    for name, value in merge_headers(configured_headers(ctx), _checked_headers(headers or {})).items():
         argv += ["-H", f"{name}: {value}"]
     if method == "HEAD":
         argv[argv.index("-X") : argv.index("-X") + 2] = ["-I"]
@@ -61,16 +60,52 @@ def http_request(
     return TechniqueResult(observation=result.stdout, facts=parsers.http_response(result.stdout, url))
 
 
-def _has_web(facts: FactStore) -> list:
+def configured_headers(ctx: Ctx) -> dict[str, str]:
+    """Headers every web request must carry, from ``config["http_headers"]`` (e.g. a bug-bounty
+    program's identification header)."""
+    return _checked_headers(ctx.config.get("http_headers", {}))
+
+
+def merge_headers(mandatory: dict[str, str], requested: dict[str, str]) -> dict[str, str]:
+    """Requested headers plus the mandatory ones; mandatory headers win (case-insensitively), so a
+    model cannot drop or change an operator-required header."""
+    taken = {name.lower() for name in mandatory}
+    return {**{k: v for k, v in requested.items() if k.lower() not in taken}, **mandatory}
+
+
+def proxy_args(ctx: Ctx, flag: str) -> list[str]:
+    """Route traffic through ``config["http_proxy"]`` (e.g. Burp). The proxy then resolves names."""
+    proxy = ctx.config.get("http_proxy")
+    return [flag, str(proxy)] if proxy else []
+
+
+def _checked_headers(headers: dict[str, str]) -> dict[str, str]:
+    for name, value in headers.items():
+        if not _HEADER_NAME.match(str(name)) or not isinstance(value, str) or "\r" in value or "\n" in value:
+            raise ValueError(f"invalid header: {name!r}")
+    return dict(headers)
+
+
+def _bounded(value: object, low: int, high: int, name: str) -> int:
+    number = int(value)  # type: ignore[arg-type]
+    if not low <= number <= high:
+        raise ValueError(f"{name} option must be between {low} and {high}")
+    return number
+
+
+def has_web(facts: FactStore) -> list:
+    """Precondition: a known HTTP(S) service or endpoint."""
     web = [s for s in facts.query("service") if str(s.get("name", "")).startswith("http")]
     return web or facts.query("endpoint")
 
 
-@technique(risk="intrusive", attack="T1595.003", needs=_has_web, timeout=300)
+@technique(risk="intrusive", attack="T1595.003", needs=has_web, timeout=300)
 def dir_discovery(
     ctx: Ctx,
     base_url: Url,
-    wordlist: Literal["small", "common", "big"] = "common",
+    wordlist: Annotated[
+        str, "small, common, big, or a name from the engagement's wordlist config"
+    ] = "common",
     extensions: Annotated[str, "comma-separated extensions to also try, e.g. 'php,txt'"] = "",
 ) -> TechniqueResult:
     """Discover files and directories under a base URL with ffuf (gentle rate). Yields endpoint facts."""
@@ -79,11 +114,21 @@ def dir_discovery(
     if "FUZZ" in base_url:
         raise ValueError("base_url must not contain the ffuf keyword FUZZ; it is appended automatically")
     base = normalize_url(base_url).rstrip("/")  # lowercased host, no query: what scope checked
+    wordlists = {**DEFAULT_WORDLISTS, **ctx.config.get("wordlists", {})}
+    if wordlist not in wordlists:
+        raise ValueError(f"unknown wordlist {wordlist!r}; available: {sorted(wordlists)}")
+    threads = _bounded(ctx.options.get("threads", 10), 1, 200, "threads")
+    rate = _bounded(ctx.options.get("rate", 50), 1, 10_000, "rate")
+    match_codes = str(ctx.options.get("match_codes", "200,201,204,301,302,307,308,401,403,405,500"))
+    if not re.fullmatch(r"(all|\d{3}(,\d{3})*)", match_codes):
+        raise ValueError("match_codes option must look like '200,301' or 'all'")
     target, host_header = pinned_url(base + "/FUZZ", ctx.targets["base_url"])
-    argv = ["ffuf", "-u", target, "-w", WORDLISTS[wordlist], "-json", "-s", "-noninteractive"]
-    max_time = max(ctx.technique.timeout - 10, 10)
-    argv += ["-t", "10", "-rate", "50", "-maxtime", str(max_time), "-timeout", "10"]
-    argv += ["-mc", "200,201,204,301,302,307,308,401,403,405,500"]
+    argv = [ctx.tool("ffuf"), "-u", target, "-w", str(wordlists[wordlist]), "-json", "-s", "-noninteractive"]
+    max_time = max(ctx.timeout - 10, 10)
+    argv += ["-t", str(threads), "-rate", str(rate), "-maxtime", str(max_time), "-timeout", "10"]
+    argv += ["-mc", match_codes, *proxy_args(ctx, "-x")]
+    for name, value in configured_headers(ctx).items():
+        argv += ["-H", f"{name}: {value}"]
     if host_header:
         argv += ["-H", f"Host: {host_header}"]
     if extensions:

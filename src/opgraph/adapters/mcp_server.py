@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
+import json
 import os
+import re
 import signal
-from collections.abc import Sequence
+import tomllib
+from collections.abc import Collection, Sequence
 from concurrent.futures import Executor as ThreadPool
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 try:
@@ -45,7 +50,13 @@ INSTRUCTIONS = (
 )
 
 
-def create_server(eng: Engagement, name: str = "opgraph", pool: ThreadPool | None = None) -> Server[Any]:
+def create_server(
+    eng: Engagement,
+    name: str = "opgraph",
+    pool: ThreadPool | None = None,
+    names: Collection[str] | None = None,
+    include_meta: bool = True,
+) -> Server[Any]:
     """Build an MCP server exposing the engagement's techniques and meta-tools.
 
     Tool calls run in worker threads: `pool` if given (lets the caller bound and abandon them on
@@ -58,7 +69,7 @@ def create_server(eng: Engagement, name: str = "opgraph", pool: ThreadPool | Non
             input_schema=spec.parameters,
             annotations=_annotations(spec.name, spec.risk),
         )
-        for spec in tool_specs(eng)
+        for spec in tool_specs(eng, names, include_meta)
     ]
 
     async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
@@ -66,7 +77,8 @@ def create_server(eng: Engagement, name: str = "opgraph", pool: ThreadPool | Non
 
     async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(pool, run_tool, eng, params.name, params.arguments or {})
+        call = functools.partial(run_tool, names=names, include_meta=include_meta)
+        text = await loop.run_in_executor(pool, call, eng, params.name, params.arguments or {})
         failed = text.startswith(("[error]", "[blocked]"))
         return types.CallToolResult(content=[types.TextContent(type="text", text=text)], is_error=failed)
 
@@ -100,7 +112,8 @@ def build_engagement(args: argparse.Namespace) -> Engagement:
     from importlib import import_module
 
     executor: Executor = SSHExecutor(args.ssh) if args.ssh else LocalExecutor()
-    packs = [import_module(f"opgraph.packs.{name}") for name in (args.pack or PACKS)]
+    packs = [import_module(f"opgraph.packs.{p}" if p in PACKS else p) for p in (args.pack or PACKS)]
+    config = _load_config(args.config) if args.config else None
     return Engagement(
         Scope.from_file(args.scope),
         techniques=packs,
@@ -108,6 +121,7 @@ def build_engagement(args: argparse.Namespace) -> Engagement:
         executor=executor,
         name=args.name,
         log_path=args.log,
+        config=config,
     )
 
 
@@ -117,12 +131,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--scope", required=True, help="scope file (.json or .toml)")
     parser.add_argument(
-        "--pack", action="append", choices=PACKS, help="technique pack (repeatable; default: all)"
+        "--pack",
+        action="append",
+        type=_pack_name,
+        help="web, net, core or any importable module path (repeatable; default: all built-in)",
     )
     parser.add_argument("--ssh", metavar="DEST", help="run tools on this host over ssh, e.g. user@kali")
     parser.add_argument("--policy", choices=POLICIES, default="safe", help="risk policy (default: safe)")
     parser.add_argument("--log", metavar="PATH", help="append the JSONL event log here")
     parser.add_argument("--name", default="engagement", help="engagement name for logs and reports")
+    parser.add_argument("--config", metavar="PATH", help="engagement config file (.json or .toml)")
+    parser.add_argument("--tool", action="append", help="expose only these techniques (repeatable)")
     return parser.parse_args(argv)
 
 
@@ -140,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, on_sigterm)
 
     async def serve() -> None:
-        server = create_server(eng, pool=pool)
+        server = create_server(eng, pool=pool, names=args.tool)
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
@@ -150,6 +169,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         pass
     finally:
         _shutdown(eng, pool)
+
+
+def _pack_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", value):
+        raise argparse.ArgumentTypeError(f"not a module path: {value!r}")
+    return value
+
+
+def _load_config(path: str) -> dict[str, Any]:
+    text = Path(path).read_text()
+    data = tomllib.loads(text) if path.endswith(".toml") else json.loads(text)
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: config must be an object/table")
+    return data
 
 
 def _shutdown(eng: Engagement, pool: ThreadPoolExecutor) -> None:

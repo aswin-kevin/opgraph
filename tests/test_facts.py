@@ -126,3 +126,16 @@ def test_thread_safety() -> None:
     for t in threads:
         t.join()
     assert len(store) == len({p for i in range(100) for p in range(i * 10, i * 10 + 50)})
+
+
+def test_define_custom_kind() -> None:
+    import pytest
+
+    from opgraph.facts import define_kind
+
+    define_kind("vhost", ("ip", "name"))
+    store = FactStore()
+    store.add([Fact("vhost", ("10.0.0.1", "dev.acme.test"), {"status": 200})])
+    assert store.query("vhost", name="dev.acme.test")[0].get("ip") == "10.0.0.1"
+    with pytest.raises(ValueError):
+        define_kind("host", ("x",))

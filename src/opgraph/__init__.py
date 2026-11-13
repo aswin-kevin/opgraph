@@ -19,7 +19,8 @@ from .facts import (
 )
 from .policy import ApprovalRequest, Decision, Policy, Risk
 from .scope import CheckedTarget, OutOfScope, Scope
-from .technique import Host, Secret, Target, Technique, TechniqueResult, Url, technique
+from .technique import Host, Network, Secret, Target, Technique, TechniqueResult, Url, technique
+from .vault import Vault
 
 __version__ = "0.1.0"
 
@@ -37,6 +38,7 @@ __all__ = [
     "FactStore",
     "Host",
     "LocalExecutor",
+    "Network",
     "OutOfScope",
     "Policy",
     "RegexCheck",
@@ -48,6 +50,7 @@ __all__ = [
     "Technique",
     "TechniqueResult",
     "Url",
+    "Vault",
     "__version__",
     "artifact",
     "credential",

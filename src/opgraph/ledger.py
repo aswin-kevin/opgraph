@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ class Ledger:
         self.events: list[dict[str, Any]] = []
         self.coverage: Counter[tuple[str, str]] = Counter()
         self._lock = threading.Lock()
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._file = None
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +40,23 @@ class Ledger:
                 self._file.flush()
                 if self.fsync:
                     os.fsync(self._file.fileno())
+            listeners = list(self._listeners)
+        for listener in listeners:
+            with contextlib.suppress(Exception):  # an observer must never break the engagement
+                listener(dict(row))  # a copy: listeners cannot alter the log
         return row
+
+    def subscribe(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """Call `listener(event)` for every event (live UIs, telemetry). Returns an unsubscribe function."""
+        with self._lock:
+            self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                if listener in self._listeners:
+                    self._listeners.remove(listener)
+
+        return unsubscribe
 
     def count(self, technique: str, target: str) -> None:
         with self._lock:
