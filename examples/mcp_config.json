@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "opgraph": {
+      "command": "opgraph-mcp",
+      "args": ["--scope", "scope.json", "--ssh", "user@kali", "--policy", "safe", "--log", "engagement.jsonl"]
+    }
+  }
+}

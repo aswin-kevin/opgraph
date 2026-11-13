@@ -22,10 +22,15 @@ classifiers = [
 dependencies = []  # the core is stdlib-only; keep it that way
 
 [project.optional-dependencies]
-# Added in the adapters phase. Only official, well-known packages.
+# Only official packages from the framework vendors.
+mcp = ["mcp>=2.3"]
+openai-agents = ["openai-agents>=0.24"]
+
+[project.scripts]
+opgraph-mcp = "opgraph.adapters.mcp_server:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
+dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380", "mcp>=2.3", "openai-agents>=0.24"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opgraph"]
