@@ -148,12 +148,14 @@ with Engagement(
     Scope(nets=["10.10.10.0/24"]),
     techniques=[web, net, core],
     executor=SSHExecutor("user@attack-box"),  # tools run there, over one reused SSH connection
-    policy=Policy.safe(),                     # raw shell needs approval, by default denied
-    log_path="engagement.jsonl",              # audit trail, and what Engagement.resume() reads after a crash
+    policy=Policy.safe(),  # raw shell needs approval, by default denied
+    log_path="engagement.jsonl",  # audit trail, and what Engagement.resume() reads after a crash
 ) as eng:
     messages = [{"role": "user", "content": "Assess 10.10.10.5. Start with the world tool."}]
     for _ in range(30):
-        reply = client.chat.completions.create(model="gpt-oss:120b", messages=messages, tools=openai_tools(eng))
+        reply = client.chat.completions.create(
+            model="gpt-oss:120b", messages=messages, tools=openai_tools(eng)
+        )
         message = reply.choices[0].message
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
@@ -268,12 +270,12 @@ eng = Engagement(
     techniques=[web, net, core],
     budget=Budget(max_calls=300, max_seconds=4 * 3600, per_technique={"dir_discovery": 10}),
     config={
-        "tools": {"nmap": "/usr/local/bin/nmap"},             # where each tool lives
-        "timeouts": {"port_scan": 900},                         # seconds per technique
-        "wordlists": {"api": "/opt/lists/api-endpoints.txt"},   # extra wordlist names
-        "http_proxy": "http://127.0.0.1:8080",                  # route web traffic through Burp
-        "http_headers": {"X-Bug-Bounty": "your-handle"},        # always sent, the model can't drop it
-        "port_scan": {"timing": "T2"},                          # per-technique options
+        "tools": {"nmap": "/usr/local/bin/nmap"},  # where each tool lives
+        "timeouts": {"port_scan": 900},  # seconds per technique
+        "wordlists": {"api": "/opt/lists/api-endpoints.txt"},  # extra wordlist names
+        "http_proxy": "http://127.0.0.1:8080",  # route web traffic through Burp
+        "http_headers": {"X-Bug-Bounty": "your-handle"},  # always sent, the model can't drop it
+        "port_scan": {"timing": "T2"},  # per-technique options
     },
 )
 ```
