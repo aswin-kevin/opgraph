@@ -4,8 +4,8 @@
     specs = anthropic_tools(eng)              # Anthropic Messages format
     text = run_tool(eng, name, arguments)     # execute any tool call; never raises
 
-Besides every registered technique, two meta-tools are always offered:
-`world` (what is known and what can be done next) and `propose_finding`.
+Besides every registered technique, three meta-tools are offered: `world` (what is known and what
+can be done next), `propose_finding` and `canary` (a unique token for proving issues).
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from .engagement import Engagement
 
 WORLD = "world"
 PROPOSE_FINDING = "propose_finding"
+CANARY = "canary"
+META_TOOLS = (WORLD, PROPOSE_FINDING, CANARY)
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,17 @@ _META = [
                 "rationale": {"type": "string", "description": "why you suspect it, citing call ids"},
             },
             "required": ["vuln_class", "target"],
+            "additionalProperties": False,
+        },
+        "safe",
+    ),
+    ToolSpec(
+        CANARY,
+        "Get a unique canary token to plant in the target (a stored field, an uploaded file, a "
+        "callback URL). If it later shows up in output you did not send it in, that proves the issue.",
+        {
+            "type": "object",
+            "properties": {"label": {"type": "string", "description": "what you will use it for"}},
             "additionalProperties": False,
         },
         "safe",
@@ -124,7 +137,7 @@ def run_tool(
     """
     if isinstance(names, str):
         raise TypeError("names must be a collection of technique names, not a string")
-    is_meta = include_meta and name in (WORLD, PROPOSE_FINDING)
+    is_meta = include_meta and name in META_TOOLS
     if not is_meta and names is not None and name not in frozenset(names):
         return f"[blocked] {name}: this tool is not available to this agent"
     try:
@@ -136,6 +149,9 @@ def run_tool(
             return eng.world()
         if is_meta and name == PROPOSE_FINDING:
             return _propose(eng, args)
+        if is_meta and name == CANARY:
+            token = eng.canary(str(args.get("label", "")))
+            return f"[ok] {CANARY}: {token} (plant it as-is; it is checked automatically when verifying)"
         return eng.call(name, args).to_tool_text()
     except Exception as exc:  # adapters must never crash the agent loop
         return eng.vault.redact(f"[error] {name}: internal error ({type(exc).__name__}: {exc})")

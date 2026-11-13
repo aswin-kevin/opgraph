@@ -29,7 +29,12 @@ class Ledger:
         self._file = None
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            torn = (
+                self.path.exists() and self.path.stat().st_size and not self.path.read_bytes().endswith(b"\n")
+            )
             self._file = self.path.open("a", encoding="utf-8")
+            if torn:  # a crash cut the last line: never glue the next event onto it
+                self._file.write("\n")
 
     def record(self, event: str, **data: Any) -> dict[str, Any]:
         with self._lock:
@@ -58,6 +63,13 @@ class Ledger:
 
         return unsubscribe
 
+    def load(self, rows: list[dict[str, Any]]) -> None:
+        """Adopt events from an earlier run (already on disk) so reports and checks see them."""
+        with self._lock:
+            self.events = [*rows, *self.events]
+            for i, row in enumerate(self.events):
+                row["seq"] = i
+
     def count(self, technique: str, target: str) -> None:
         with self._lock:
             self.coverage[(technique, target)] += 1
@@ -70,7 +82,14 @@ class Ledger:
 
 
 def read_events(path: str | Path) -> Iterator[dict[str, Any]]:
+    """Events from a JSONL log. Lines that do not decode (e.g. cut by a crash) are skipped."""
     with Path(path).open(encoding="utf-8") as fh:
         for line in fh:
-            if line.strip():
-                yield json.loads(line)
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and "event" in row:
+                yield row

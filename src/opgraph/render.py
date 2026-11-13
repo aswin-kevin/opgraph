@@ -78,13 +78,18 @@ def _value(value: object, untrusted: bool, force_quotes: bool = False) -> str:
     return text
 
 
-def world(store: FactStore, techniques: Iterable[Technique] = (), budget_tokens: int = 1500) -> str:
+def world(
+    store: FactStore,
+    techniques: Iterable[Technique] = (),
+    budget_tokens: int = 1500,
+    extra: Iterable[str] = (),
+) -> str:
     """The world view: the fact graph as an indented tree, then the actions currently available.
 
     Budget is approximate (4 chars per token). Actions are always shown; facts are cut first.
     """
     techniques = list(techniques)
-    footer = _actions(store, techniques)
+    footer = "\n".join([*extra, _actions(store, techniques)])
     budget_chars = max(budget_tokens * 4 - len(footer), 200)
 
     body = _tree_lines(store)

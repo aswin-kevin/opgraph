@@ -153,6 +153,21 @@ class Scope:
         self._check_ip(target, ip, domain_ok=True)
         return CheckedTarget(parsed, str(ip))
 
+    def allows_without_dns(self, target: str) -> bool:
+        """Lexical scope test that never resolves names (for cheap filtering). An in-scope domain
+        passes even though its DNS answer is unknown; always rely on `check` before acting."""
+        try:
+            parsed = parse_target(target)
+        except TargetError:
+            return False
+        if parsed.is_network or canonical_ip(parsed.host) is not None:
+            return self.allows(target)
+        if self.ports is not None and parsed.port is not None and parsed.port not in self.ports:
+            return False
+        return self._matches(parsed.host, self.domains) and not self._matches(
+            parsed.host, self.exclude_domains
+        )
+
     def allows(self, target: str) -> bool:
         try:
             self.check(target)

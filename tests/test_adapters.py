@@ -49,6 +49,7 @@ def test_specs_cover_techniques_and_meta(eng: Engagement) -> None:
         "note",
         "world",
         "propose_finding",
+        "canary",
     ]
     http = next(s for s in tool_specs(eng) if s.name == "http_request")
     assert "Redirects are not followed" in http.description  # full docstring, not just the first line

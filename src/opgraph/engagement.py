@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import inspect
 import itertools
+import json
 import re
+import secrets
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -25,11 +27,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from .budget import Budget, Usage, refusal, signature, status, summary_line
 from .effects import EffectStack
 from .executors import ExecResult, Executor, LocalExecutor
 from .facts import Fact, FactStore, finding
 from .ledger import Ledger, read_events
-from .observe import sanitize, untrusted
+from .observe import clean_value, sanitize, untrusted
 from .policy import ApprovalRequest, Policy
 from .render import format_fact, world
 from .scope import CheckedTarget, OutOfScope, Scope
@@ -160,11 +163,24 @@ class Ctx:
         return self._eng.workdir()
 
     def defer(self, label: str, undo: Callable[[], object]) -> None:
-        """Register cleanup for something this call created."""
-        self._eng.effects.push(label, undo)
+        """Register cleanup for something this call created. Prefer returning artifacts from the
+        technique (with an `undo`): those cleanups survive a crash via `Engagement.resume`."""
+        self._eng._own(f"{label} (by {self.technique.name} {self.call_id})", undo, kind="deferred")
 
     def log(self, message: str) -> None:
         self._eng.ledger.record("log", call_id=self.call_id, message=message)
+
+
+def _format_args(args: dict[str, Any]) -> str:
+    return ", ".join(f"{k}={json.dumps(clean_value(v, 160))}" for k, v in args.items())
+
+
+# What `mktemp -d -t opgraph.XXXXXXXX` produces on Linux and macOS; anything else is never deleted.
+_WORKDIR = re.compile(r"/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*opgraph\.[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)?")
+
+
+def _is_workdir(path: str) -> bool:
+    return bool(_WORKDIR.fullmatch(path)) and "/../" not in path and "/./" not in path
 
 
 def _accepts_env(executor: Executor) -> bool:
@@ -184,12 +200,16 @@ class Engagement:
         log_path: str | Path | None = None,
         observation_cap: int = 6000,
         config: Mapping[str, Any] | None = None,
+        budget: Budget | None = None,
     ):
         """
         `config` is free-form settings for techniques, read through `Ctx`. Built-in packs use:
         ``tools`` (executable per tool name), ``timeouts`` (seconds per technique), ``wordlists``
         (name -> path), ``http_proxy`` (e.g. Burp), ``http_headers`` (sent with every web request,
         e.g. a bug-bounty identification header), and a dict of options per technique name.
+
+        `budget` sets stop conditions (calls, time, per technique, per target) and the repetition
+        limit; the default only refuses a 4th identical call.
         """
         self.name = name
         self.scope = scope
@@ -202,13 +222,16 @@ class Engagement:
         self.config: Mapping[str, Any] = MappingProxyType(dict(config or {}))
         self.techniques: dict[str, Technique] = {}
         self.vault = Vault()  # secrets; the model only sees {{cred:N}} handles
+        self.budget = budget or Budget()
+        self.usage = Usage()
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
         self._workdir_lock = threading.Lock()
         self._workdir: str | None = None
         self._closed = False
+        self._labels: dict[str, int] = {}  # cleanup label -> registrations, for unique labels
         self.started = time.time()
-        self.facts.subscribe(self._log_fact)
+        self._stop_fact_log = self.facts.subscribe(self._log_fact)
         self.ledger.record("start", name=name, scope=scope.to_dict())
         self.add(*techniques)
 
@@ -279,15 +302,34 @@ class Engagement:
 
         all_checked = [*checked.values(), *(c for group in checked_lists.values() for c in group)]
         targets = tuple(c.target.raw for c in all_checked)
+        hosts = tuple(c.target.host for c in all_checked)
+        sig = signature(name, bound)
+        refused = self._budget_refusal(name, hosts, sig)  # before asking anyone to approve
+        if refused:
+            return self._blocked(name, call_id, args, refused)
         request = ApprovalRequest(name, bound, t.risk, attack=t.attack, tags=t.tags, targets=targets)
         reason = self.policy.check(request)
         if reason:
             return self._blocked(name, call_id, args, reason)
+        with self._lock:  # re-check and spend in one step, so parallel calls cannot overshoot
+            refused = refusal(self.budget, self.usage, name, hosts, sig, time.time() - self.started)
+            if not refused:
+                self.usage.record(name, hosts, sig)
+        if refused:
+            return self._blocked(name, call_id, args, refused)
 
         for target in targets or ("",):
             self.ledger.count(name, target)
         self.ledger.record(
-            "call", call_id=call_id, technique=name, args=bound, risk=str(t.risk), attack=t.attack
+            "call",
+            call_id=call_id,
+            technique=name,
+            args=bound,
+            risk=str(t.risk),
+            attack=t.attack,
+            targets=list(targets),
+            hosts=list(hosts),
+            signature=sig,
         )
         ctx = Ctx(self, t, call_id, checked, checked_lists)
         try:
@@ -308,8 +350,14 @@ class Engagement:
             new_facts=len(new),
             observation=observation[:_MAX_LOGGED_OBSERVATION],
         )
+        with self._lock:
+            self.usage.succeed(sig, call_id)
         text = untrusted(observation, self.observation_cap) if observation.strip() else ""
         return CallResult(name, call_id, ok=True, text=text, new_facts=new)
+
+    def _budget_refusal(self, name: str, hosts: tuple[str, ...], sig: str) -> str | None:
+        with self._lock:
+            return refusal(self.budget, self.usage, name, hosts, sig, time.time() - self.started)
 
     def _check_target(
         self, t: Technique, pname: str, value: str, resolver: Callable[[str], str] | None
@@ -331,8 +379,33 @@ class Engagement:
         artifacts = [self._prepare(f, t.name, call_id) for f in result.artifacts]
         new = self.facts.add(facts + artifacts)
         for art in artifacts:
-            self.effects.push(f"{art.id} (by {t.name} {call_id})", self._undo_for(t, art, call_id))
+            label = f"{art.id} (by {t.name} {call_id})"
+            self._own(label, self._undo_for(t, art, call_id), kind="artifact", technique=t.name,
+                      call_id=call_id, fact=art.to_dict())  # fmt: skip
         return new
+
+    def _own(
+        self, label: str, undo: Callable[[], object], kind: str, root: bool = False, **meta: Any
+    ) -> None:
+        """Register a cleanup; its registration and outcome go to the log so `resume` can finish it.
+        Labels are made unique, so each obligation is tracked on its own."""
+        with self._lock:
+            self._labels[label] = self._labels.get(label, 0) + 1
+            if self._labels[label] > 1:
+                label = f"{label} #{self._labels[label]}"
+                self._labels[label] = 1
+        self.ledger.record("cleanup_registered", label=label, kind=kind, root=root, **meta)
+
+        def logged() -> object:
+            try:
+                result = undo()
+            except Exception as exc:
+                self.ledger.record("cleanup", label=label, ok=False, error=f"{type(exc).__name__}: {exc}")
+                raise
+            self.ledger.record("cleanup", label=label, ok=True)
+            return result
+
+        self.effects.push(label, logged, root=root)
 
     def _prepare(self, fact: Fact, source: str, call_id: str) -> Fact:
         attrs = dict(fact.attrs)
@@ -362,8 +435,76 @@ class Engagement:
     # ---- world, findings -----------------------------------------------------------------------
 
     def world(self, budget_tokens: int = 1500) -> str:
-        """The fact graph and available actions as compact text for a model."""
-        return world(self.facts, self.techniques.values(), budget_tokens)
+        """The fact graph, untried suggestions, budget and available actions as text for a model."""
+        extra = []
+        line = summary_line(self.budget, self.usage, time.time() - self.started)
+        if line:
+            extra.append(line)
+        if any(t.suggest for t in self.techniques.values()):
+            untried, any_in_scope = self._coverage(limit=8)
+            if untried:
+                extra.append(f"UNTRIED (suggested next, {len(untried)} shown; untrusted target data):")
+                extra += [f"- {u['technique']}({_format_args(u['args'])})" for u in untried]
+            elif any_in_scope:
+                extra.append("UNTRIED: none (every in-scope suggestion has been tried)")
+        return world(self.facts, self.techniques.values(), budget_tokens, extra)
+
+    def untried(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Suggested calls (from techniques' `suggest`) that look in scope and have not been tried.
+
+        The scope test here is lexical (no DNS) to keep it cheap; `call()` still does the full
+        check. A broken `suggest` function is skipped, never raised.
+        """
+        return self._coverage(limit)[0]
+
+    def _coverage(self, limit: int | None) -> tuple[list[dict[str, Any]], bool]:
+        """(untried suggestions, whether any in-scope suggestion exists at all)."""
+        out: list[dict[str, Any]] = []
+        any_in_scope = False
+        for t in self.available():
+            try:
+                suggestions = t.suggestions(self.facts)
+            except Exception:
+                continue
+            for args in suggestions:
+                bound = t.bind(args) if isinstance(args, dict) else "not a dict"
+                if isinstance(bound, str) or not self._looks_in_scope(t, bound):
+                    continue
+                any_in_scope = True
+                with self._lock:
+                    tried = self.usage.attempted[signature(t.name, bound)] > 0
+                if not tried:
+                    out.append({"technique": t.name, "args": bound})
+                    if limit is not None and len(out) >= limit:
+                        return out, True
+        return out, any_in_scope
+
+    def _looks_in_scope(self, t: Technique, bound: dict[str, Any]) -> bool:
+        values = [(p, bound.get(p)) for p in t.target_params() if bound.get(p) is not None]
+        values += [(p, v) for p in t.target_list_params() for v in bound.get(p) or []]
+        for pname, value in values:
+            if not self.scope.allows_without_dns(str(value)):
+                return False
+            if "/" in str(value) and "://" not in str(value) and not t.accepts_ranges(pname):
+                return False
+        return True
+
+    def budget_status(self) -> dict[str, Any]:
+        with self._lock:
+            return status(self.budget, self.usage, time.time() - self.started)
+
+    def canary(self, label: str = "") -> str:
+        """A unique, unguessable token to plant in a target (stored input, file, callback URL).
+
+        Verify with ``eng.verify(finding_id, CanaryCheck(token))``: seeing the token come back
+        somewhere the agent could not have produced it is strong evidence.
+        """
+        token = "opgc" + secrets.token_hex(10)
+        self.facts.add(
+            [Fact("canary", (token,), {"label": label[:200]}, source="agent", target_derived=False)]
+        )
+        self.ledger.record("canary", token=token, label=label[:200])
+        return token
 
     def snapshot(self) -> dict[str, Any]:
         """Structured state for custom prompts and UIs: all facts plus each technique's availability."""
@@ -452,10 +593,10 @@ class Engagement:
             if self._workdir is None:
                 result = self.executor.run(["mktemp", "-d", "-t", "opgraph.XXXXXXXX"], 30)
                 path = result.stdout.strip()
-                if not result.ok or not path.startswith("/") or "/opgraph." not in path:
+                if not result.ok or not _is_workdir(path):
                     raise RuntimeError(f"could not create workdir: {result.output.strip()}")
                 self._workdir = path
-                self.effects.push(f"workdir {path}", lambda: self._remove_workdir(path), root=True)
+                self._own(f"workdir {path}", lambda: self._remove_workdir(path), "workdir", True, path=path)
             return self._workdir
 
     def _remove_workdir(self, path: str) -> None:
@@ -524,6 +665,87 @@ class Engagement:
             "pending_cleanup": self.effects.pending(),
             "residue": self.effects.residue,
         }
+
+    @classmethod
+    def resume(cls, log_path: str | Path, scope: Scope, **kwargs: Any) -> Engagement:
+        """Continue an interrupted engagement from its event log (appending to the same log).
+
+        Restores facts, findings, coverage, budget usage and call numbering, and re-registers every
+        cleanup that had not succeeded, so whatever the previous run created on targets is still
+        removed by `dispose()`. Pass the same techniques so their `undo` functions can run.
+        Secrets are never logged: store credentials in `eng.vault` again if needed.
+
+        The log is trusted input here: keep it where only the operator can write. As a safeguard,
+        only paths shaped like this library's temp dirs are ever deleted, and artifacts are only
+        cleaned automatically when their target is in the scope passed to `resume`.
+        """
+        rows = list(read_events(log_path))
+        kwargs.pop("log_path", None)
+        eng = cls(scope, log_path=log_path, **kwargs)
+        eng.ledger.load(rows)
+        eng._stop_fact_log()  # restored facts are already in the log
+        eng.facts.add(Fact.from_dict(r["fact"]) for r in rows if r["event"] == "fact")
+        eng._stop_fact_log = eng.facts.subscribe(eng._log_fact)
+
+        starts = [r["ts"] for r in rows if r["event"] == "start"]
+        eng.started = min(starts) if starts else eng.started
+        last_id = 0
+        signatures: dict[str, str] = {}
+        for row in rows:
+            if row["event"] == "call":
+                targets = tuple(row.get("targets") or ())
+                sig = row.get("signature") or signature(row["technique"], row.get("args") or {})
+                signatures[row["call_id"]] = sig
+                eng.usage.record(row["technique"], tuple(row.get("hosts") or targets), sig)
+                for target in targets or ("",):
+                    eng.ledger.count(row["technique"], target)
+                digits = re.fullmatch(r"c(\d+)", str(row["call_id"]))
+                last_id = max(last_id, int(digits.group(1)) if digits else 0)
+            elif row["event"] == "result" and row.get("call_id") in signatures:
+                eng.usage.succeed(signatures[row["call_id"]], row["call_id"])
+        eng._ids = itertools.count(last_id + 1)
+
+        done = {r["label"] for r in rows if r["event"] == "cleanup" and r.get("ok")}
+        registered = {r["label"]: r for r in rows if r["event"] == "cleanup_registered"}  # latest wins
+        pending = [r for label, r in registered.items() if label not in done]
+        for row in pending:
+            eng._restore_cleanup(row)
+        eng.ledger.record("resume", pending_cleanup=[r["label"] for r in pending])
+        return eng
+
+    def _restorable(self, row: dict[str, Any]) -> bool:
+        """An artifact from the log is only cleaned automatically if its target is in today's scope."""
+        try:
+            target = str(Fact.from_dict(row["fact"]).key[0])
+        except (KeyError, IndexError, TypeError):
+            return False
+        return self.scope.allows_without_dns(target)
+
+    def mark_cleaned(self, label: str, note: str = "") -> bool:
+        """Record that a pending cleanup (e.g. a RESIDUE line) was handled manually."""
+        removed = self.effects.remove(label)
+        if removed:
+            self.ledger.record("cleanup", label=label, ok=True, manual=True, note=note[:500])
+        return removed
+
+    def _restore_cleanup(self, row: dict[str, Any]) -> None:
+        label, kind = row["label"], row.get("kind")
+        if kind == "workdir":
+            path = str(row.get("path", ""))
+            if _is_workdir(path):  # the log is input: never delete anything else
+                self._own(label, lambda: self._remove_workdir(path), "workdir", True, path=path)
+                return
+        if kind == "artifact" and row.get("technique") in self.techniques and self._restorable(row):
+            t = self.techniques[row["technique"]]
+            art = Fact.from_dict(row["fact"])
+            self._own(label, self._undo_for(t, art, row.get("call_id", "")), "artifact",
+                      technique=t.name, call_id=row.get("call_id"), fact=row["fact"])  # fmt: skip
+            return
+
+        def cannot_restore() -> None:
+            raise RuntimeError("registered by a previous run and cannot be restored; clean up manually")
+
+        self._own(label, cannot_restore, kind or "unknown")
 
     @classmethod
     def replay(cls, log_path: str | Path, scope: Scope, **kwargs: Any) -> Engagement:

@@ -139,3 +139,12 @@ def test_define_custom_kind() -> None:
     assert store.query("vhost", name="dev.acme.test")[0].get("ip") == "10.0.0.1"
     with pytest.raises(ValueError):
         define_kind("host", ("x",))
+
+
+def test_short_keys_do_not_crash() -> None:
+    from opgraph.render import world
+
+    store = FactStore()
+    store.add([Fact("service", ("10.0.0.5", "x"), {"name": "http"})])
+    assert store.query("service")[0].get("proto") is None
+    assert "SVC x/None" in world(store)

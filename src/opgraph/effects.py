@@ -41,6 +41,16 @@ class EffectStack:
             self._frames = [("root", [])]
         return self._unwind(frames)
 
+    def remove(self, label: str) -> bool:
+        """Forget a pending cleanup without running it (it was handled elsewhere)."""
+        with self._lock:
+            for _, effects in self._frames:
+                for i, (known, _) in enumerate(effects):
+                    if known == label:
+                        del effects[i]
+                        return True
+        return False
+
     def pending(self) -> list[str]:
         with self._lock:
             return [label for _, effects in self._frames for label, _ in effects]

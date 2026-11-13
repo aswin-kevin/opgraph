@@ -41,7 +41,7 @@ from ..engagement import Engagement
 from ..executors import Executor, LocalExecutor, SSHExecutor
 from ..policy import Policy, Risk
 from ..scope import Scope
-from ..tools import PROPOSE_FINDING, WORLD, run_tool, tool_specs
+from ..tools import META_TOOLS, WORLD, run_tool, tool_specs
 
 INSTRUCTIONS = (
     "Security testing tools for an authorized engagement. Call `world` first to see what is known "
@@ -92,7 +92,7 @@ def create_server(
 
 
 def _annotations(name: str, risk: str) -> types.ToolAnnotations:
-    if name in (WORLD, PROPOSE_FINDING):  # local bookkeeping only; propose_finding records state
+    if name in META_TOOLS:  # local bookkeeping only; only `world` is read-only
         return types.ToolAnnotations(read_only_hint=name == WORLD, open_world_hint=False)
     return types.ToolAnnotations(
         read_only_hint=risk == Risk.SAFE,

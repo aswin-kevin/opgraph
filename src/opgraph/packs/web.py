@@ -24,7 +24,25 @@ _SESSION = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 
 
-@technique(risk="intrusive", attack="T1595", timeout=60)
+def _unrequested(fact: Fact) -> dict | None:
+    """Endpoints known from links, forms or scans but never fetched are worth a request."""
+    if fact.kind == "endpoint" and fact.get("status") is None:
+        return {"url": fact.get("url")}
+    return None
+
+
+def _web_root(fact: Fact) -> dict | None:
+    if fact.kind == "service" and str(fact.get("name", "")).startswith("http"):
+        scheme = "https" if fact.get("name") == "https" or fact.get("tls") else "http"
+        host = fact.get("host")
+        host = f"[{host}]" if ":" in str(host) else host
+        return {"base_url": origin_of(f"{scheme}://{host}:{fact.get('port')}")}
+    if fact.kind == "endpoint" and urlsplit(str(fact.get("url"))).path == "/":
+        return {"base_url": origin_of(str(fact.get("url")))}
+    return None
+
+
+@technique(risk="intrusive", attack="T1595", timeout=60, suggest=_unrequested)
 def http_request(
     ctx: Ctx,
     url: Url,
@@ -99,7 +117,7 @@ def has_web(facts: FactStore) -> list:
     return web or facts.query("endpoint")
 
 
-@technique(risk="intrusive", attack="T1595.003", needs=has_web, timeout=300)
+@technique(risk="intrusive", attack="T1595.003", needs=has_web, timeout=300, suggest=_web_root)
 def dir_discovery(
     ctx: Ctx,
     base_url: Url,

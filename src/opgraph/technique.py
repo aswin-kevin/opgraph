@@ -11,6 +11,7 @@ scope-checked (those typed Target/Url/Host), and the risk the policy decides on.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import types
 from collections.abc import Callable, Iterable
@@ -74,6 +75,7 @@ class TechniqueResult:
 
 
 Needs = Callable[[FactStore], Iterable[Fact]]
+Suggest = Callable[[Fact], "dict[str, Any] | Iterable[dict[str, Any]] | None"]
 Undo = Callable[["Ctx", Fact], object]
 
 _MARK = "__opgraph_technique__"
@@ -91,6 +93,7 @@ class Technique:
     tags: frozenset[str] = frozenset()
     doc: str = ""  # full docstring, shown to the model as the tool description
     custom_schema: dict[str, Any] | None = None  # overrides the schema derived from type hints
+    suggest: Suggest | None = None  # turns a fact from `needs` into arguments worth trying
 
     def __post_init__(self) -> None:
         self._hints = get_type_hints(self.fn, include_extras=True)
@@ -168,6 +171,22 @@ class Technique:
     def is_available(self, facts: FactStore) -> bool:
         return self.needs is None or any(True for _ in self.needs(facts))
 
+    def suggestions(self, facts: FactStore) -> list[dict[str, Any]]:
+        """Argument sets worth trying, derived from the facts this technique applies to."""
+        if self.suggest is None:
+            return []
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for fact in self.needs(facts) if self.needs else facts:
+            result = self.suggest(fact)
+            candidates: list[Any] = [result] if isinstance(result, dict) else list(result or [])
+            for args in candidates:
+                key = json.dumps(args, sort_keys=True, default=str)
+                if isinstance(args, dict) and key not in seen:
+                    seen.add(key)
+                    out.append(args)
+        return out
+
     def bind(self, args: dict[str, Any]) -> dict[str, Any] | str:
         """Validate and coerce model-provided arguments. Returns the bound args or an error string."""
         names = {p.name for p in self.params}
@@ -197,12 +216,17 @@ def technique(
     timeout: int = 120,
     tags: Iterable[str] = (),
     schema: dict[str, Any] | None = None,
+    suggest: Suggest | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Declare a function as a technique. The function itself is returned unchanged (still callable),
     with the Technique attached; register it on an Engagement to use it.
 
     `schema` replaces the JSON schema derived from type hints, for parameter shapes the derivation
     does not cover. Type hints still decide which arguments are scope-checked or receive secrets.
+
+    `suggest` maps each fact returned by `needs` (or every fact, without `needs`) to arguments
+    worth trying: a dict, several dicts, or None. The engagement
+    uses it to list untried work, so coverage gaps are visible and saturation is a stop signal.
     """
 
     def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -221,6 +245,7 @@ def technique(
                 tags=frozenset(tags),
                 doc=doc,
                 custom_schema=schema,
+                suggest=suggest,
             ),
         )
         return fn

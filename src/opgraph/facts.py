@@ -78,7 +78,8 @@ class Fact:
         """Look up a named key part first, then an attribute."""
         names = KEY_FIELDS.get(self.kind, ())
         if name in names:
-            return self.key[names.index(name)]
+            index = names.index(name)
+            return self.key[index] if index < len(self.key) else default  # tolerate short keys
         return self.attrs.get(name, default)
 
     def to_dict(self) -> dict[str, Any]:
